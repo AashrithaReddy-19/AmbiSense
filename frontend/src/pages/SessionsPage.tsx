@@ -1,0 +1,14 @@
+import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { api } from '../services/api';
+import type { Session } from '../types';
+
+export function SessionsPage(){
+  const[rows,setRows]=useState<Session[]>([]);const[selected,setSelected]=useState<number[]>([]);const[comparison,setComparison]=useState<any[]>([]);
+  useEffect(()=>{const load=()=>api.get('/sessions').then(r=>setRows(r.data));load();const timer=setInterval(load,2000);return()=>clearInterval(timer)},[]);
+  function toggle(id:number){setSelected(old=>old.includes(id)?old.filter(value=>value!==id):[...old,id])}
+  async function compare(){if(selected.length<2)return;const response=await api.get('/session-comparison',{params:{ids:selected.join(',')}});setComparison(response.data)}
+  const chartData=comparison.map(item=>({session:`#${item.session_id}`,attendance:item.average_attendance,engagement:item.average_engagement,attention:item.average_attention,fatigue:item.average_fatigue}));
+  return <><div className="page-head"><div><h1>Sessions</h1><p>Persistent classroom history and academic comparison</p></div><div className="actions"><button className="button secondary" disabled={selected.length<2} onClick={compare}>Compare ({selected.length})</button><Link className="button" to="/upload">Upload video</Link></div></div><section className="table-card">{rows.length?<table><thead><tr><th>Compare</th><th>Session</th><th>Status</th><th>Stage</th><th>Progress</th><th>Frames / speed / ETA</th><th>Created</th></tr></thead><tbody>{rows.map(row=><tr key={row.id}><td><input type="checkbox" checked={selected.includes(row.id)} onChange={()=>toggle(row.id)}/></td><td><Link to={`/sessions/${row.id}`}>{row.name}</Link><small>Session #{row.id} · {row.analytics_mode}</small></td><td><span className={`status ${row.status.toLowerCase()}`}>{row.status}</span></td><td>{row.processing_stage}</td><td>{row.progress}%</td><td>{row.processed_frames}/{row.total_frames}<small>{row.processing_speed} fps · ETA {row.eta_seconds}s</small></td><td>{new Date(row.created_at).toLocaleString()}</td></tr>)}</tbody></table>:<div className="empty">No sessions yet. Upload your first classroom video.</div>}</section>{comparison.length>0&&<section className="chart-card"><h2>Session comparison</h2><p>Stored attendance, engagement, attention and fatigue averages</p><ResponsiveContainer width="100%" height={320}><BarChart data={chartData}><CartesianGrid stroke="#25304a" vertical={false}/><XAxis dataKey="session"/><YAxis domain={[0,100]}/><Tooltip/><Legend/><Bar dataKey="attendance" fill="#60a5fa"/><Bar dataKey="engagement" fill="#31d8a0"/><Bar dataKey="attention" fill="#a78bfa"/><Bar dataKey="fatigue" fill="#fb7185"/></BarChart></ResponsiveContainer></section>}</>
+}

@@ -1,0 +1,4 @@
+export type Metric = { students:number; attendance:number; attention:number; engagement:number; fatigue:number; drowsiness:number; yawning:number; raised_hands:number; empty_seats:number; occupancy:number };
+export type Summary = { sessions:number; active_sessions:number; latest:Metric|null; demo_mode:boolean; analytics_mode:string; current_session:{id:number;name:string;status:string;stage:string}|null;last_updated:number|null;recent_events:Array<{session_id:number;timestamp:number;type:string;severity:string;message:string}> };
+export type Session = { id:number; name:string; status:string; source_type:string; progress:number; processing_stage:string;duration:number;fps:number;total_frames:number;processed_frames:number;processing_speed:number;eta_seconds:number;analytics_mode:string;annotated_video_path:string|null;created_at:string; error:string|null };
+export type Trend = { timestamp:number; engagement:number; attention:number; fatigue:number };

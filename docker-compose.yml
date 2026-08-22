@@ -1,0 +1,28 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports: ["8000:8000"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://ambisense:ambisense@postgres:5432/ambisense
+      DEMO_MODE: ${DEMO_MODE:-false}
+    volumes: ["./videos:/app/videos", "./reports:/app/reports", "./models:/app/models"]
+    depends_on: [postgres, redis]
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports: ["5173:80"]
+    depends_on: [backend]
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ambisense
+      POSTGRES_USER: ambisense
+      POSTGRES_PASSWORD: ambisense
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+  redis:
+    image: redis:7-alpine
+volumes:
+  postgres_data:

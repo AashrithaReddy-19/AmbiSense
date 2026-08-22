@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SHIKSHA Classroom Analytics</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #07111f; color: #e7eef9; }
+    header { padding: 52px 24px 30px; text-align: center; background: radial-gradient(circle at top, #164e63, transparent 60%); }
+    h1 { margin: 0; font-size: clamp(2rem, 6vw, 4rem); }
+    header p { color: #a8c1d9; }
+    main { width: min(1100px, 92%); margin: 0 auto 60px; display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; }
+    section { background: #101d2e; border: 1px solid #263b52; border-radius: 16px; padding: 22px; box-shadow: 0 16px 45px #0005; }
+    h2 { margin-top: 0; }
+    p { line-height: 1.55; color: #b8c7d9; }
+    label { display: block; margin: 14px 0 6px; font-size: .9rem; }
+    input { width: 100%; padding: 10px; background: #091422; border: 1px solid #35506d; border-radius: 8px; }
+    button { width: 100%; margin-top: 16px; padding: 11px; border: 0; border-radius: 8px; color: #041018; background: #67e8f9; font-weight: 750; cursor: pointer; }
+    button:disabled { opacity: .5; cursor: wait; }
+    pre { min-height: 70px; overflow: auto; white-space: pre-wrap; background: #07111f; padding: 12px; border-radius: 8px; color: #9ee7b0; }
+  </style>
+</head>
+<body>
+  <header><h1>SHIKSHA</h1><p>AI-assisted classroom safety and activity analytics</p></header>
+  <main>
+    <section><h2>Fire detection</h2><p>Scan a classroom video for fire detections.</p><form data-api="/api/fire"><label>Video</label><input name="video" type="file" accept="video/*" required><button>Analyze video</button></form><pre></pre></section>
+    <section><h2>Projector usage</h2><p>Estimate how long a detected projector remained on.</p><form data-api="/api/projector"><label>Video</label><input name="video" type="file" accept="video/*" required><button>Analyze projector</button></form><pre></pre></section>
+    <section><h2>Noise analysis</h2><p>Measure noise and voice duration in a WAV recording.</p><form data-api="/api/noise"><label>WAV audio</label><input name="audio" type="file" accept="audio/wav,.wav" required><button>Analyze audio</button></form><pre></pre></section>
+    <section><h2>Face matching</h2><p>Compare detected classroom faces with registered images.</p><form data-api="/api/faces"><label>Classroom image</label><input name="image" type="file" accept="image/*" required><label>Registered faces</label><input name="registered_faces" type="file" accept="image/*" multiple required><button>Match faces</button></form><pre></pre></section>
+  </main>
+  <script>
+    document.querySelectorAll('form').forEach(form => form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const output = form.nextElementSibling;
+      const button = form.querySelector('button');
+      button.disabled = true; output.textContent = 'Processing…';
+      try {
+        const response = await fetch(form.dataset.api, { method: 'POST', body: new FormData(form) });
+        const data = await response.json();
+        output.textContent = JSON.stringify(data, null, 2);
+      } catch (error) { output.textContent = `Request failed: ${error.message}`; }
+      finally { button.disabled = false; }
+    }));
+  </script>
+</body>
+</html>

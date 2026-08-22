@@ -1,0 +1,5 @@
+import { Activity, BarChart3, FileText, LayoutDashboard, Radio, Search, Settings, Upload } from 'lucide-react';
+import { NavLink, Outlet } from 'react-router-dom';
+
+const items = [['/dashboard','Dashboard',LayoutDashboard],['/live','Live Classroom',Radio],['/sessions','Sessions',Activity],['/upload','Upload',Upload],['/search','Search',Search],['/reports','Reports',FileText],['/settings','Settings',Settings]] as const;
+export function Layout(){return <div className="shell"><aside><div className="brand"><span>A</span><div>AMBISENSE<small>Ambient intelligence</small></div></div><nav>{items.map(([to,label,Icon])=><NavLink key={to} to={to} className={({isActive})=>isActive?'active':''}><Icon size={18}/>{label}</NavLink>)}</nav><div className="privacy"><BarChart3 size={18}/><div><b>Privacy first</b><small>Anonymous tracking by default</small></div></div></aside><div className="workspace"><header><div><small>CLASSROOM INTELLIGENCE</small><b>Classroom A</b></div><div className="live-dot">● SYSTEM ONLINE</div></header><main><Outlet/></main></div></div>}

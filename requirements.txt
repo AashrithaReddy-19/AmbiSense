@@ -1,0 +1,12 @@
+Flask
+torch
+ultralytics==8.0.196
+deepface
+moviepy==1.0.3
+numpy
+scipy
+matplotlib
+opencv-python-headless
+pandas
+scikit-learn
+tf-keras
