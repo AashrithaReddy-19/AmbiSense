@@ -1,14 +1,226 @@
-import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { api } from '../services/api';
-import type { Session } from '../types';
-
-export function SessionsPage(){
-  const[rows,setRows]=useState<Session[]>([]);const[selected,setSelected]=useState<number[]>([]);const[comparison,setComparison]=useState<any[]>([]);
-  useEffect(()=>{const load=()=>api.get('/sessions').then(r=>setRows(r.data));load();const timer=setInterval(load,2000);return()=>clearInterval(timer)},[]);
-  function toggle(id:number){setSelected(old=>old.includes(id)?old.filter(value=>value!==id):[...old,id])}
-  async function compare(){if(selected.length<2)return;const response=await api.get('/session-comparison',{params:{ids:selected.join(',')}});setComparison(response.data)}
-  const chartData=comparison.map(item=>({session:`#${item.session_id}`,attendance:item.average_attendance,engagement:item.average_engagement,attention:item.average_attention,fatigue:item.average_fatigue}));
-  return <><div className="page-head"><div><h1>Sessions</h1><p>Persistent classroom history and academic comparison</p></div><div className="actions"><button className="button secondary" disabled={selected.length<2} onClick={compare}>Compare ({selected.length})</button><Link className="button" to="/upload">Upload video</Link></div></div><section className="table-card">{rows.length?<table><thead><tr><th>Compare</th><th>Session</th><th>Status</th><th>Stage</th><th>Progress</th><th>Frames / speed / ETA</th><th>Created</th></tr></thead><tbody>{rows.map(row=><tr key={row.id}><td><input type="checkbox" checked={selected.includes(row.id)} onChange={()=>toggle(row.id)}/></td><td><Link to={`/sessions/${row.id}`}>{row.name}</Link><small>Session #{row.id} · {row.analytics_mode}</small></td><td><span className={`status ${row.status.toLowerCase()}`}>{row.status}</span></td><td>{row.processing_stage}</td><td>{row.progress}%</td><td>{row.processed_frames}/{row.total_frames}<small>{row.processing_speed} fps · ETA {row.eta_seconds}s</small></td><td>{new Date(row.created_at).toLocaleString()}</td></tr>)}</tbody></table>:<div className="empty">No sessions yet. Upload your first classroom video.</div>}</section>{comparison.length>0&&<section className="chart-card"><h2>Session comparison</h2><p>Stored attendance, engagement, attention and fatigue averages</p><ResponsiveContainer width="100%" height={320}><BarChart data={chartData}><CartesianGrid stroke="#25304a" vertical={false}/><XAxis dataKey="session"/><YAxis domain={[0,100]}/><Tooltip/><Legend/><Bar dataKey="attendance" fill="#60a5fa"/><Bar dataKey="engagement" fill="#31d8a0"/><Bar dataKey="attention" fill="#a78bfa"/><Bar dataKey="fatigue" fill="#fb7185"/></BarChart></ResponsiveContainer></section>}</>
+import { Archive } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { api } from "../services/api";
+import type { Session } from "../types";
+export function SessionsPage() {
+  const [rows, setRows] = useState<Session[]>([]),
+    [selected, setSelected] = useState<number[]>([]),
+    [q, setQ] = useState(""),
+    [status, setStatus] = useState(""),
+    [mode, setMode] = useState(""),
+    [archived, setArchived] = useState(false),
+    [page, setPage] = useState(1),
+    [pages, setPages] = useState(1),
+    [feedback, setFeedback] = useState("");
+  function load() {
+    api
+      .get("/v1/sessions", {
+        params: {
+          q: q || undefined,
+          status: status || undefined,
+          mode: mode || undefined,
+          archived,
+          page,
+          page_size: 20,
+        },
+      })
+      .then((r) => {
+        setRows(r.data.items);
+        setPages(r.data.pages);
+        setSelected([]);
+      });
+  }
+  useEffect(load, [q, status, mode, archived, page]);
+  function toggle(id: number) {
+    setSelected((old) =>
+      old.includes(id) ? old.filter((value) => value !== id) : [...old, id],
+    );
+  }
+  async function archiveOne(id: number) {
+    await api.post(`/v1/sessions/${id}/archive`, null, {
+      params: { archived: !archived },
+    });
+    load();
+  }
+  async function bulk() {
+    if (
+      !selected.length ||
+      !confirm(
+        `Archive ${selected.length} selected sessions? Active sessions will be skipped.`,
+      )
+    )
+      return;
+    try {
+      const r = await api.post("/v1/sessions/bulk-archive", {
+        session_ids: selected,
+      });
+      setFeedback(
+        `Archived ${r.data.archived.length}; skipped ${r.data.skipped.length}; not found ${r.data.not_found.length}.`,
+      );
+      load();
+    } catch (e: any) {
+      setFeedback(e.response?.data?.detail || "Bulk archive failed.");
+    }
+  }
+  const all = rows.length > 0 && rows.every((row) => selected.includes(row.id));
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1>Sessions</h1>
+          <p>Searchable anonymous classroom history</p>
+        </div>
+        <div className="actions">
+          <button
+            className="secondary"
+            disabled={!selected.length}
+            onClick={bulk}
+          >
+            <Archive size={15} />
+            Archive selected ({selected.length})
+          </button>
+          <Link className="button" to="/upload">
+            Upload video
+          </Link>
+        </div>
+      </div>
+      <div className="live-controls">
+        <input
+          placeholder="Search sessions"
+          value={q}
+          onChange={(e) => {
+            setQ(e.target.value);
+            setPage(1);
+          }}
+        />
+        <select value={status} onChange={(e) => setStatus(e.target.value)}>
+          <option value="">All statuses</option>
+          {[
+            "CREATED",
+            "QUEUED",
+            "PROCESSING",
+            "COMPLETED",
+            "FAILED",
+            "STOPPED",
+          ].map((v) => (
+            <option key={v}>{v}</option>
+          ))}
+        </select>
+        <select value={mode} onChange={(e) => setMode(e.target.value)}>
+          <option value="">Real and demo</option>
+          <option>REAL</option>
+          <option>DEMO</option>
+        </select>
+        <label className="toggle">
+          <span>Archived</span>
+          <input
+            type="checkbox"
+            checked={archived}
+            onChange={(e) => setArchived(e.target.checked)}
+          />
+        </label>
+      </div>
+      {feedback && <div className="notice">{feedback}</div>}
+      <section className="table-card">
+        {rows.length ? (
+          <table>
+            <thead>
+              <tr>
+                <th>
+                  <input
+                    aria-label="Select filtered page"
+                    type="checkbox"
+                    checked={all}
+                    onChange={() =>
+                      setSelected(
+                        all
+                          ? []
+                          : rows
+                              .filter(
+                                (r) =>
+                                  ![
+                                    "PROCESSING",
+                                    "INITIALIZING",
+                                    "FINALIZING",
+                                  ].includes(r.status),
+                              )
+                              .map((r) => r.id),
+                      )
+                    }
+                  />
+                </th>
+                <th>Session</th>
+                <th>Status</th>
+                <th>Activity</th>
+                <th>Progress</th>
+                <th>Source</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.id}>
+                  <td>
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${row.name}`}
+                      checked={selected.includes(row.id)}
+                      onChange={() => toggle(row.id)}
+                    />
+                  </td>
+                  <td>
+                    <Link to={`/sessions/${row.id}`}>{row.name}</Link>
+                    <small>
+                      #{row.id} · <b>{row.analytics_mode}</b>
+                      {row.is_test ? " · API/TEST" : ""}
+                    </small>
+                  </td>
+                  <td>
+                    <span className={`status ${row.status.toLowerCase()}`}>
+                      {row.status}
+                    </span>
+                    <small>{row.processing_stage}</small>
+                  </td>
+                  <td>{row.activity_context.replace(/_/g, " ")}</td>
+                  <td>
+                    {row.progress}%
+                    <small>
+                      {row.processed_frames}/{row.total_frames}
+                    </small>
+                  </td>
+                  <td>
+                    {row.source_type}
+                    <small>{row.duration.toFixed(1)}s</small>
+                  </td>
+                  <td>
+                    <button
+                      className="secondary"
+                      onClick={() => archiveOne(row.id)}
+                    >
+                      <Archive size={14} />
+                      {archived ? "Restore" : "Archive"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <div className="empty">No matching sessions.</div>
+        )}
+      </section>
+      <div className="actions">
+        <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
+          Previous
+        </button>
+        <span>
+          Page {page} of {pages}
+        </span>
+        <button disabled={page >= pages} onClick={() => setPage((p) => p + 1)}>
+          Next
+        </button>
+      </div>
+    </>
+  );
 }
