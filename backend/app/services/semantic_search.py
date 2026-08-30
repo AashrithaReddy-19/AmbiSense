@@ -3,16 +3,16 @@ import re
 from functools import lru_cache
 
 import numpy as np
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from ..models import AnalyticsSnapshot, Session as ClassroomSession
+from ..models import AnalyticsSnapshot, GeneratedContentItem, QualityAssessment, Session as ClassroomSession, TranscriptSegment
 
 
 logger = logging.getLogger("ambisense.search")
 METRICS = {
     "distracted": "distracted_students", "distraction": "distracted_students",
-    "attendance": "attendance", "occupancy": "attendance",
+    "attendance": "occupancy_rate", "occupancy": "occupancy_rate",
     "engagement": "engagement_score", "attention": "attention_score",
     "fatigue": "fatigue_score", "drowsiness": "drowsiness_count",
     "yawn": "yawning_count", "raised hand": "raised_hands", "participation": "raised_hands",
@@ -20,7 +20,7 @@ METRICS = {
 }
 INTENTS = {
     "distracted_students": "students distracted or not attentive",
-    "attendance": "attendance occupancy presence class strength",
+    "occupancy_rate": "anonymous occupancy presence room capacity",
     "engagement_score": "classroom engagement involvement",
     "attention_score": "visual attention looking toward instructor",
     "fatigue_score": "fatigue tiredness declining energy",
@@ -72,6 +72,25 @@ def parse_query(query: str) -> dict[str, object]:
 
 
 def search_analytics(db: Session, query: str) -> dict:
+    text = query.lower().strip()
+    session_match = re.search(r"session\s*#?\s*(\d+)", text)
+    session_id = int(session_match.group(1)) if session_match else None
+    # These are explicit, allowlisted read-only intents. User input is always bound
+    # through SQLAlchemy and is never interpreted as SQL.
+    if any(word in text for word in ("transcript", "said", "mention", "concept", "definition", "question")):
+        words=[w for w in re.findall(r"[a-z0-9_-]{3,}",text) if w not in {"transcript","said","mention","mentioned","concept","definition","question","session"} and not w.isdigit()]
+        statement=select(TranscriptSegment,ClassroomSession).join(ClassroomSession,ClassroomSession.id==TranscriptSegment.session_id)
+        if session_id: statement=statement.where(TranscriptSegment.session_id==session_id)
+        if words:
+            clauses=[TranscriptSegment.original_text.ilike(f"%{w}%") for w in words]
+            statement=statement.where(or_(*clauses))
+        rows=db.execute(statement.order_by(TranscriptSegment.start_seconds).limit(100)).all()
+        return {"query":query,"interpreted_filter":{"intent":"TRANSCRIPT_EVIDENCE","terms":words,"session_id":session_id,"parser":"deterministic_allowlist"},"matches":[{"session_id":r.session_id,"session":s.name,"timestamp":r.start_seconds,"metric":"transcript","value":r.corrected_text or r.original_text,"reason":"Transcript evidence at the cited timestamp","confidence":r.confidence,"evidence_segment_id":r.id} for r,s in rows]}
+    if "poor camera" in text or "camera quality" in text:
+        statement=select(QualityAssessment,ClassroomSession).join(ClassroomSession,ClassroomSession.id==QualityAssessment.session_id).where(QualityAssessment.status.in_(["POOR","LIMITED"]))
+        if session_id: statement=statement.where(QualityAssessment.session_id==session_id)
+        rows=db.execute(statement.order_by(QualityAssessment.timestamp).limit(100)).all()
+        return {"query":query,"interpreted_filter":{"intent":"CAMERA_QUALITY","session_id":session_id,"parser":"deterministic_allowlist"},"matches":[{"session_id":r.session_id,"session":s.name,"timestamp":r.timestamp,"metric":"camera_quality","value":r.status,"reason":"Stored frame-quality assessment","confidence":r.overall_quality} for r,s in rows]}
     parsed = parse_query(query)
     column = getattr(AnalyticsSnapshot, str(parsed["metric"]))
     statement = select(AnalyticsSnapshot, ClassroomSession).join(ClassroomSession, ClassroomSession.id == AnalyticsSnapshot.session_id)

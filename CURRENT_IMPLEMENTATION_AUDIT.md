@@ -1,6 +1,15 @@
 # AmbiSense Current Implementation Audit
 
-Audit refreshed: 2026-08-12
+Audit refreshed: 2026-08-22
+
+## Priority 1 audit resolution
+
+- The 395% display came from accumulating ByteTrack-local IDs and dividing by expected students without expiry or deduplication. Current occupancy now uses room capacity; valid unique tracks use duration, observation, confidence, timeout and re-entry gates; verified attendance remains unavailable.
+- Blank live values came from treating missing landmark evidence as zero and from a client without reconnect/status handling. Metric envelopes now distinguish unavailable, insufficient, disabled, processing, failed, and measured-zero states.
+- Stale `UPLOADING` status came from an unvalidated lifecycle. Jobs now progress through queued, initializing, processing, finalizing and completed states, with failure/stop paths and duplicate-job protection.
+- `100000ms` was an FPS-derived frame interval, not measured latency. Unknown latency is now `null` and displayed as unavailable.
+- Stored-session WebSockets now carry sequence numbers; the client rejects duplicates, reconnects with capped exponential backoff, and cleans up on unmount.
+- Central validation, quality assessment, confidence/coverage envelopes, Alembic migration, and focused tests are implemented. Later work is accurately listed in `IMPLEMENTATION_STATUS.md`.
 
 ## Working end-to-end
 

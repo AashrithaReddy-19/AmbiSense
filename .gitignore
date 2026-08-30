@@ -2,11 +2,14 @@ __pycache__/
 *.py[cod]
 .env
 .pytest_cache/
+.test-tmp/
 ambisense.db
 logs/
 reports/*.csv
 reports/*.pdf
 reports/*.mp4
+reports/*.json
+reports/*.txt
 videos/*
 frontend/node_modules/
 frontend/dist/

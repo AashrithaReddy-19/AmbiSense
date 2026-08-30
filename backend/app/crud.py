@@ -17,7 +17,7 @@ def session_summary(db: DBSession, session_id: int) -> dict:
     engagement = [row.engagement_score for row in rows]
     return {
         "session_id": session_id, "status": session.status, "snapshots": len(rows),
-        "duration_seconds": round(rows[-1].timestamp, 2), "average_attendance": average("attendance"),
+        "duration_seconds": round(rows[-1].timestamp, 2), "average_occupancy_rate": round(sum(row.occupancy_rate or 0 for row in rows) / len(rows), 2), "verified_attendance_rate": None,
         "average_engagement": average("engagement_score"), "peak_engagement": round(max(engagement), 2),
         "lowest_engagement": round(min(engagement), 2), "average_attention": average("attention_score"),
         "average_fatigue": average("fatigue_score"), "total_yawns": max(row.yawning_count for row in rows),

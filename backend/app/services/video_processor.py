@@ -1,11 +1,15 @@
 import logging
 import math
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 
 import cv2
 import torch
+from sqlalchemy import delete, select
+
+from .. import models
 
 from ..config import Settings, get_settings
 from ..cv.attention import AttentionEstimator
@@ -14,8 +18,14 @@ from ..cv.engagement import calculate_engagement, calculate_fatigue
 from ..cv.face_landmarks import FaceLandmarkProcessor, FaceSignals
 from ..cv.pose import PoseProcessor, PoseSignals
 from ..cv.yawn import YawnDetector
+from ..cv.tracking import TrackLifecycleManager
+from ..cv.quality import assess_frame_quality
+from ..cv.regions import assign_region
+from ..metrics import bounded_percentage, metric_envelope, safe_rate
+from .activity_context import context_limitations, metric_relevant
+from .report_generator import create_csv_report, create_pdf_report
 from ..database import SessionLocal
-from ..models import Alert, AnalyticsSnapshot, Event, RuntimeSetting, Session, StudentObservation
+from ..models import Alert, AnalyticsSnapshot, AnonymousTrack, Event, QualityAssessment, Session, StudentObservation
 
 
 logger = logging.getLogger("ambisense.processor")
@@ -32,27 +42,58 @@ class VideoProcessor:
         self.attention = AttentionEstimator(self.settings.ema_alpha)
         self.drowsiness = DrowsinessDetector(self.settings.ear_threshold, self.settings.drowsiness_duration)
         self.yawning = YawnDetector(self.settings.yawn_threshold, self.settings.yawn_min_duration)
-        self.observed_ids: set[str] = set()
+        self.tracks = TrackLifecycleManager(self.settings.minimum_track_observations, self.settings.minimum_track_duration, self.settings.track_timeout, self.settings.track_reentry_window, self.settings.track_iou_gate)
+        self.peak_occupancy = 0
         self.non_attentive_since: dict[str, float] = {}
         self.hand_states: dict[str, bool] = {}
         self.last_event_at: dict[str, float] = {}
+        self._layout_regions = None
 
     def run(self) -> None:
         db = SessionLocal()
         session = db.get(Session, self.session_id)
         if not session:
             db.close(); return
-        session.status = "PROCESSING"; session.processing_stage = "ANALYZING_FRAMES"; session.started_at = datetime.utcnow()
+        if session.status in {"PROCESSING", "INITIALIZING", "FINALIZING", "COMPLETED"}: db.close(); return
+        session.status = "DECODING"; session.processing_stage = "DECODING"; session.started_at = session.started_at or datetime.utcnow(); session.error = None
         session.analytics_mode = "DEMO" if self.settings.demo_mode else "REAL"
-        db.commit()
+        db.commit(); logger.info("[JOB] stage=DECODING session_id=%s job_id=%s", self.session_id, session.job_id)
         try:
+            # A retry replaces only incomplete derived records for this job.
+            for model in (StudentObservation, AnalyticsSnapshot, Event, Alert, AnonymousTrack, QualityAssessment):
+                db.execute(delete(model).where(model.session_id == self.session_id))
+            session.status = "PROCESSING"; session.processing_stage = "PROCESSING"; db.commit(); logger.info("[JOB] stage=PROCESSING session_id=%s job_id=%s", self.session_id, session.job_id)
             if self.settings.demo_mode: self._run_demo(db, session)
             else: self._run_real(db, session)
+            session.status = "AGGREGATING"; session.processing_stage = "AGGREGATING"; db.commit(); logger.info("[JOB] stage=AGGREGATING session_id=%s job_id=%s", self.session_id, session.job_id)
+            self._persist_tracks(db)
+            try:
+                from .audio_intelligence import run_audio_intelligence
+                session.processing_stage = "AUDIO_INTELLIGENCE"; db.commit()
+                run_audio_intelligence(db, session, self.settings)
+            except Exception:
+                # Audio is optional and must never invalidate completed visual evidence.
+                logger.exception("Optional audio intelligence failed for session %s", self.session_id)
+                db.rollback()
+                row = db.scalar(select(models.AudioAnalysis).where(models.AudioAnalysis.session_id == self.session_id))
+                if not row: db.add(models.AudioAnalysis(session_id=self.session_id, status="FAILED", limitations=["Optional audio processing failed; visual analytics remain available."]))
+                else: row.status="FAILED"; row.limitations=[*row.limitations,"Optional audio processing failed; visual analytics remain available."]
+                db.commit()
+            session.status = "GENERATING_REPORT"; session.processing_stage = "GENERATING_REPORT"; db.commit(); logger.info("[REPORT] generation started session_id=%s job_id=%s", self.session_id, session.job_id)
+            for report_format, factory in (("csv", create_csv_report), ("pdf", create_pdf_report)):
+                path = factory(db, self.session_id)
+                report = db.scalar(select(models.Report).where(models.Report.session_id == self.session_id, models.Report.format == report_format))
+                if report: report.path = str(path)
+                else: db.add(models.Report(session_id=self.session_id, format=report_format, path=str(path)))
+            db.commit(); logger.info("[REPORT] generation completed session_id=%s job_id=%s", self.session_id, session.job_id)
             session.status = "COMPLETED"; session.processing_stage = "COMPLETED"; session.progress = 100; session.eta_seconds = 0; session.ended_at = datetime.utcnow()
-            db.commit()
+            db.commit(); logger.info("[JOB] stage=COMPLETED session_id=%s job_id=%s", self.session_id, session.job_id)
         except Exception as error:
             logger.exception("Session %s processing failed", self.session_id)
-            session.status = "FAILED"; session.processing_stage = "FAILED"; session.error = str(error); session.ended_at = datetime.utcnow(); db.commit()
+            reference = uuid.uuid4().hex[:12]
+            failure_code = "VIDEO_DECODING_FAILED" if isinstance(error, ValueError) else "MODEL_OR_PROCESSING_FAILED"
+            session.status = "FAILED"; session.processing_stage = "FAILED"; session.error = f"{str(error)[:240] or 'Video processing failed'} (reference {reference})"; session.failure_code = failure_code; session.internal_error_reference = reference; session.ended_at = datetime.utcnow(); db.commit()
+            logger.error("[JOB] stage=FAILED session_id=%s job_id=%s code=%s reference=%s", self.session_id, session.job_id, failure_code, reference)
         finally:
             db.close()
 
@@ -99,6 +140,8 @@ class VideoProcessor:
                     poses = pose_processor.process(frame, int(timestamp * 1000))
                     cached = self._observations(db, result, faces, poses, timestamp)
                     self._aggregate(db, timestamp, cached)
+                    quality = assess_frame_quality(frame, people=len(cached), face_count=len(faces), pose_count=len(poses))
+                    db.add(QualityAssessment(session_id=self.session_id,timestamp=round(timestamp,3),overall_quality=quality.get("overall_quality"),status=quality["status"],details=quality))
                 annotated = frame.copy()
                 for observation in cached: self._draw(annotated, observation)
                 latest = cached
@@ -115,12 +158,18 @@ class VideoProcessor:
 
     def _observations(self, db, result, faces: list[FaceSignals], poses: list[PoseSignals], timestamp: float) -> list[dict]:
         observations = []
+        if self._layout_regions is None:
+            session = db.get(Session, self.session_id)
+            layout = db.scalar(select(models.ClassroomLayout).where(models.ClassroomLayout.classroom_id == session.classroom_id, models.ClassroomLayout.active.is_(True)).order_by(models.ClassroomLayout.version.desc())) if session and session.classroom_id else None
+            self._layout_regions = list(layout.regions) if layout else []
         boxes = result.boxes
         if boxes is None: return observations
         ids = boxes.id.int().cpu().tolist() if boxes.id is not None else list(range(1, len(boxes) + 1))
         for index, coordinates in enumerate(boxes.xyxy.cpu().tolist()):
-            x1, y1, x2, y2 = coordinates; tracking_id = f"Student_{ids[index]:02d}"; self.observed_ids.add(tracking_id)
-            confidence = float(boxes.conf[index].item()); face = next((item for item in faces if x1 <= item.center[0] <= x2 and y1 <= item.center[1] <= y2), None)
+            x1, y1, x2, y2 = coordinates
+            confidence = float(boxes.conf[index].item()); track=self.tracks.observe(int(ids[index]),timestamp,confidence,coordinates); tracking_id=f"Track_{track.uuid[:8]}"
+            height, width = result.orig_shape; region_id = assign_region(((x1+x2)/2, (y1+y2)/2), width, height, self._layout_regions)
+            face = next((item for item in faces if x1 <= item.center[0] <= x2 and y1 <= item.center[1] <= y2), None)
             pose_signal = next((item for item in poses if x1 <= item.center[0] <= x2 and y1 <= item.center[1] <= y2), None)
             pose = face.head_pose if face else None; direction = pose.direction if pose else "UNKNOWN"
             attention = self.attention.estimate(tracking_id, direction)
@@ -137,26 +186,34 @@ class VideoProcessor:
             previous_hand = self.hand_states.get(tracking_id, False)
             if raised_hand != previous_hand:
                 event_type = "HAND_RAISED" if raised_hand else "HAND_LOWERED"
-                db.add(Event(session_id=self.session_id, timestamp=timestamp, tracking_id=tracking_id, event_type=event_type, severity="INFO", message=f"{tracking_id}: hand {'raised' if raised_hand else 'lowered'}", details={"confidence": pose_signal.confidence if pose_signal else 0}))
+                event_key=f"{tracking_id}:{event_type}"
+                if timestamp-self.last_event_at.get(event_key,-999)>=1.5:
+                    db.add(Event(session_id=self.session_id, timestamp=timestamp, end_timestamp=timestamp, tracking_id=tracking_id, event_type=event_type, severity="INFO", message=f"{tracking_id}: hand {'raised' if raised_hand else 'lowered'}", confidence=pose_signal.confidence if pose_signal else 0, region_id=region_id, affected_tracks=1, details={"confidence": pose_signal.confidence if pose_signal else 0}))
+                    self.last_event_at[event_key]=timestamp
             self.hand_states[tracking_id] = raised_hand
-            item = {"tracking_id": tracking_id, "bbox": [round(v, 1) for v in coordinates], "confidence": confidence, "yaw": pose.yaw if pose else None, "pitch": pose.pitch if pose else None, "roll": pose.roll if pose else None, "direction": direction, "attention_state": state, "attention_score": float(attention["score"]), "ear": face.ear if face else None, "eye_state": eye["eye_state"], "drowsiness": bool(eye["possible_drowsiness"]), "mar": face.mar if face else None, "yawning": bool(yawn["yawning"]), "yawn_count": int(yawn["yawn_count"]), "raised_hand": raised_hand}
+            item = {"tracking_id": tracking_id, "region_id": region_id, "bbox": [round(v, 1) for v in coordinates], "confidence": confidence, "yaw": pose.yaw if pose else None, "pitch": pose.pitch if pose else None, "roll": pose.roll if pose else None, "direction": direction, "attention_state": state, "attention_score": float(attention["score"]), "ear": face.ear if face else None, "eye_state": eye["eye_state"], "drowsiness": bool(eye["possible_drowsiness"]), "mar": face.mar if face else None, "yawning": bool(yawn["yawning"]), "yawn_count": int(yawn["yawn_count"]), "raised_hand": raised_hand}
             observations.append(item)
-            db.add(StudentObservation(session_id=self.session_id, timestamp=round(timestamp, 3), tracking_id=tracking_id, confidence=confidence, bbox=item["bbox"], yaw=item["yaw"], pitch=item["pitch"], roll=item["roll"], head_direction=direction, attention_state=item["attention_state"], attention_score=item["attention_score"], ear=item["ear"], eye_state=item["eye_state"], possible_drowsiness=item["drowsiness"], mar=item["mar"], yawning=item["yawning"], raised_hand=raised_hand))
-            if item["drowsiness"]: db.add(Event(session_id=self.session_id, timestamp=timestamp, tracking_id=tracking_id, event_type="POSSIBLE_DROWSINESS", severity="WARNING", message=f"{tracking_id}: possible prolonged eye closure"))
-            if item["yawning"]: db.add(Event(session_id=self.session_id, timestamp=timestamp, tracking_id=tracking_id, event_type="YAWNING", severity="INFO", message=f"{tracking_id}: sustained mouth opening detected"))
+            db.add(StudentObservation(session_id=self.session_id, timestamp=round(timestamp, 3), tracking_id=tracking_id, confidence=confidence, bbox=item["bbox"], yaw=item["yaw"], pitch=item["pitch"], roll=item["roll"], head_direction=direction, attention_state=item["attention_state"], attention_score=item["attention_score"], ear=item["ear"], eye_state=item["eye_state"], possible_drowsiness=item["drowsiness"], mar=item["mar"], yawning=item["yawning"], raised_hand=raised_hand, region_id=region_id))
+            for active,event_type,severity,message in ((item["drowsiness"],"POSSIBLE_DROWSINESS","WARNING",f"{tracking_id}: possible prolonged eye closure"),(item["yawning"],"YAWNING","INFO",f"{tracking_id}: sustained mouth opening detected")):
+                event_key=f"{tracking_id}:{event_type}"
+                if active and timestamp-self.last_event_at.get(event_key,-999)>=self.settings.aggregation_interval:
+                    db.add(Event(session_id=self.session_id,timestamp=timestamp,end_timestamp=timestamp,tracking_id=tracking_id,event_type=event_type,severity=severity,message=message,confidence=confidence,region_id=region_id,affected_tracks=1))
+                    self.last_event_at[event_key]=timestamp
         return observations
 
     def _aggregate(self, db, timestamp: float, rows: list[dict]) -> None:
-        count = len(rows); attention = sum(row["attention_score"] for row in rows) / count if count else 0
+        count = len(rows); face_rows=[row for row in rows if row["direction"]!="UNKNOWN"]; attention = sum(row["attention_score"] for row in face_rows) / len(face_rows) if face_rows else None
         drowsy = sum(row["drowsiness"] for row in rows); yawns = sum(self.yawning.counts.values()); looking_down = sum(row["attention_state"] == "LOOKING_DOWN" for row in rows) / count * 100 if count else 0
         raised_hands = sum(row["raised_hand"] for row in rows); looking_down_count = sum(row["attention_state"] == "LOOKING_DOWN" for row in rows); looking_away_count = sum(row["attention_state"] in {"LOOKING_LEFT", "LOOKING_RIGHT", "LOOKING_AWAY", "DISTRACTED"} for row in rows)
-        orientation = sum(row["direction"] == "FRONT" for row in rows) / count * 100 if count else 0; eye_score = 100 - drowsy / count * 100 if count else 0
-        engagement = float(calculate_engagement({"attention": attention, "orientation": orientation, "eye_state": eye_score, "activity": min(100, count / max(self.settings.expected_students, 1) * 100), "expression": 50})["engagement_score"])
-        fatigue = float(calculate_fatigue(drowsy / count * 100 if count else 0, min(100, yawns * 5), looking_down, max(0, 70 - engagement))["fatigue_score"])
-        self._snapshot(db, timestamp, count, attention, engagement, fatigue, drowsy, yawns, "REAL", raised_hands, looking_down_count, looking_away_count)
+        orientation = safe_rate(sum(row["direction"] == "FRONT" for row in face_rows),len(face_rows)); eye_score = safe_rate(len(face_rows)-drowsy,len(face_rows))
+        signals={"attention":attention,"orientation":orientation,"eye_state":eye_score,"activity":safe_rate(count,self.settings.expected_students)}
+        available={key:value for key,value in signals.items() if value is not None}
+        engagement = float(calculate_engagement(available, {key:{"attention":.45,"orientation":.20,"eye_state":.15,"activity":.20}[key] for key in available})["engagement_score"]) if available else 0
+        fatigue = float(calculate_fatigue(safe_rate(drowsy,len(face_rows)) or 0, min(100, yawns * 5), looking_down, max(0, 70 - engagement))["fatigue_score"])
+        self._snapshot(db, timestamp, count, attention or 0, engagement, fatigue, drowsy, yawns, "REAL", raised_hands, looking_down_count, looking_away_count, valid_faces=len(face_rows))
         conditions = [
             (looking_away_count >= max(3, count * .3), "HIGH_DISTRACTION", "WARNING", f"{looking_away_count} students were estimated as distracted or looking away."),
-            (count and len(self.observed_ids) / max(self.settings.expected_students, 1) * 100 < 60, "LOW_ATTENDANCE", "WARNING", "Anonymous attendance estimate fell below 60%."),
+            (count and (safe_rate(count,self.settings.total_seats) or 0) < 60, "LOW_OCCUPANCY", "WARNING", "Current anonymous occupancy fell below 60% of configured capacity."),
             (fatigue >= 65, "HIGH_FATIGUE", "WARNING", "Classroom fatigue indicators reached HIGH."),
             (engagement < 40, "LOW_ENGAGEMENT", "WARNING", "Estimated Engagement Index fell below 40."),
             (engagement >= 80, "HIGH_ENGAGEMENT", "INFO", "Estimated Engagement Index exceeded 80."),
@@ -168,10 +225,18 @@ class VideoProcessor:
                 db.add(Event(session_id=self.session_id, timestamp=timestamp, event_type=event_type, severity=severity, message=message, details={"student_count": count, "engagement": engagement, "fatigue": fatigue}))
                 self.last_event_at[event_type] = timestamp
 
-    def _snapshot(self, db, timestamp, students, attention, engagement, fatigue, drowsy, yawns, mode, raised_hands=0, looking_down=0, looking_away=0):
+    def _snapshot(self, db, timestamp, students, attention, engagement, fatigue, drowsy, yawns, mode, raised_hands=0, looking_down=0, looking_away=0, valid_faces=None):
         expected = max(1, self.settings.expected_students); seats = max(1, self.settings.total_seats); occupied = min(seats, students); distracted = round(students * max(0, 100 - attention) / 100)
-        db.add(AnalyticsSnapshot(session_id=self.session_id, timestamp=round(timestamp, 2), student_count=students, visible_faces=students, attendance=round(len(self.observed_ids) / expected * 100, 2) if mode == "REAL" else round(students / expected * 100, 2), attention_score=round(attention, 2), engagement_score=round(engagement, 2), fatigue_score=round(fatigue, 2), drowsiness_count=drowsy, yawning_count=yawns, occupied_seats=occupied, empty_seats=max(0, seats - occupied), noise_level="UNKNOWN", distracted_students=distracted, raised_hands=raised_hands, looking_down_students=looking_down, looking_away_students=looking_away, details={"mode": mode, "identity": "anonymous"}))
+        self.peak_occupancy=max(self.peak_occupancy,occupied); faces=students if valid_faces is None else valid_faces
+        coverage=safe_rate(faces,students)
+        session=db.get(Session,self.session_id); activity=session.activity_context if session else "LECTURE"
+        metrics={"visual_orientation":metric_envelope("visual_orientation",attention,valid_observations=faces,eligible_observations=students,confidence=(coverage or 0)/100,limitations=([] if faces else ["No usable face landmarks were available."])+context_limitations(activity,"visual_orientation"),model_enabled=metric_relevant(activity,"visual_orientation"),minimum_coverage=self.settings.minimum_metric_coverage),"observable_participation":metric_envelope("observable_participation",engagement,valid_observations=max(faces,students),eligible_observations=students,confidence=max((coverage or 0)/100,.3) if students else 0,limitations=context_limitations(activity,"observable_participation"),model_enabled=metric_relevant(activity,"observable_participation"),minimum_coverage=self.settings.minimum_metric_coverage),"possible_fatigue":metric_envelope("possible_fatigue",fatigue,valid_observations=faces,eligible_observations=students,confidence=(coverage or 0)/100,model_enabled=metric_relevant(activity,"possible_fatigue"),minimum_coverage=self.settings.minimum_metric_coverage)}
+        db.add(AnalyticsSnapshot(session_id=self.session_id, timestamp=round(timestamp, 2), student_count=students, visible_faces=faces, attendance=0, attention_score=bounded_percentage(attention) or 0, engagement_score=bounded_percentage(engagement) or 0, fatigue_score=bounded_percentage(fatigue) or 0, drowsiness_count=drowsy, yawning_count=yawns, occupied_seats=occupied, empty_seats=max(0, seats - occupied), current_occupancy_count=occupied,peak_occupancy_count=self.peak_occupancy,occupancy_rate=safe_rate(occupied,seats),estimated_unique_tracks=self.tracks.valid_unique_count() if mode=="REAL" else students,verified_attendance_rate=None,noise_level="UNKNOWN", distracted_students=distracted, raised_hands=raised_hands, looking_down_students=looking_down, looking_away_students=looking_away, details={"mode": mode, "identity": "anonymous", "activity_context":activity,"metrics":metrics,"expected_students":expected,"room_capacity":seats}))
         if engagement < 40: db.add(Alert(session_id=self.session_id, timestamp=timestamp, severity="WARNING", message="Estimated engagement fell below 40%."))
+
+    def _persist_tracks(self, db):
+        for track in {item.uuid:item for item in self.tracks.tracks.values()}.values():
+            db.add(AnonymousTrack(session_id=self.session_id,track_uuid=track.uuid,tracker_local_id=track.local_id,first_seen=track.first_seen,last_seen=track.last_seen,observation_count=track.observations,visible_duration=track.visible_duration,average_confidence=track.average_confidence,last_bbox=track.bbox,active=track.active,expiry_reason=track.expiry_reason))
 
     @staticmethod
     def _draw(frame, row):

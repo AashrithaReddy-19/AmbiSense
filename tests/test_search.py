@@ -6,7 +6,7 @@ def test_deterministic_search_parser():
     assert {key: distracted[key] for key in ("metric", "operator", "value")} == {"metric": "distracted_students", "operator": ">", "value": 10.0}
     assert distracted["parser"] == "deterministic" and distracted["confidence"] == 1.0
     attendance = parse_query("Find classes where attendance was below 75%")
-    assert {key: attendance[key] for key in ("metric", "operator", "value")} == {"metric": "attendance", "operator": "<", "value": 75.0}
+    assert {key: attendance[key] for key in ("metric", "operator", "value")} == {"metric": "occupancy_rate", "operator": "<", "value": 75.0}
 
 
 def test_search_parser_session_and_time_constraints():

@@ -42,6 +42,7 @@ Requirements: Python 3.11+ and Node.js 20+.
 ```powershell
 Copy-Item .env.example .env
 python -m pip install -r backend\requirements.txt
+alembic upgrade head
 Set-Location frontend
 npm install
 Set-Location ..
@@ -73,6 +74,28 @@ Real analytics are the default. `DEMO_MODE=true` explicitly enables simulated an
 ## Upload and live analytics
 
 Open `/upload`, select a supported classroom recording, and start analysis. The API creates a persistent session and processes it in a background task. `/ws/analytics/{session_id}` streams current progress and metrics once per second. Completed sessions contain summaries, timelines, search matches, and report downloads.
+
+## Classroom calibration and activity context
+
+Open `/classroom-setup` to draw normalized seat, zone, instructor, projector, entrance, exit, or excluded-area polygons and save a new layout version. Assign that classroom to a session to enable calibrated aggregate region summaries. Without a calibrated layout, AmbiSense reports estimated unoccupied capacity rather than exact empty seats. Session Detail supports activity-context changes and event confirmation, uncertainty, or report exclusion.
+
+Reference JPG, PNG, or WEBP images can be uploaded in Classroom Setup, or captured from a locally retained session video. The editor supports bounded region movement and vertex editing. Its preview uses temporary anonymous track labels only. Heat maps expose explicit availability, confidence, and coverage rather than converting missing evidence to zero.
+
+Development cleanup runs at startup and then at `TEST_SESSION_CLEANUP_INTERVAL_MINUTES`. It targets only sessions explicitly marked `is_test`, older than `TEST_SESSION_CLEANUP_AGE_HOURS`, and performs `TEST_SESSION_CLEANUP_ACTION=ARCHIVE|DELETE`. Disable it with `TEST_SESSION_CLEANUP_ENABLED=false`. Every change is recorded in `cleanup_audits`; real sessions are never eligible.
+
+## Optional audio and lecture intelligence
+
+Audio is disabled by default. `AUDIO_ANALYTICS_ENABLED=true` enables FFmpeg extraction and anonymous quality/voice-activity evidence. `TRANSCRIPTION_PROVIDER=FASTER_WHISPER` uses an installed local Faster Whisper model; disabled or missing dependencies produce explicit states and never fabricate text or fail visual analytics. Transcript-derived content is extractive and keeps evidence segment IDs/timestamps. Speaker roles default to `UNKNOWN`. Fusion excludes missing evidence and reports effective weights, confidence, coverage, limitations, and methodology version.
+
+`TRANSCRIPT_RETENTION_ENABLED=true` runs idempotent cleanup through the existing scheduler. After `TRANSCRIPT_RETENTION_DAYS`, it removes the extracted WAV, transcript segments/corrections, anonymous speaker segments, chapters, and generated transcript content. It preserves permitted aggregate discourse/fusion records and writes `TRANSCRIPT_RETENTION` cleanup-audit entries. Transcript JSON, CSV, and text exports are available from Session Detail only while transcript evidence exists. Session PDF/CSV reports include available Priority 3 status, confidence, coverage, context, exclusions, and limitations without converting missing values to zero.
+
+Fusion uses the confirmed activity context to include or exclude visual/audio/discourse components and renormalizes included weights. Reviewer-excluded or incorrect evidence is shown with its exclusion reason in the Evidence Graph and omitted from report events/fusion where applicable. Diarization is optional: `DIARIZATION_PROVIDER=NONE` is the default; `LOCAL_ADAPTER` exposes the adapter boundary but reports unavailable unless an operator supplies a compatible local adapter. Provider speaker labels are discarded, roles remain anonymous, and permitted roles can be assigned manually per segment.
+
+## Multi-classroom and course management
+
+Priority 4 adds normalized users, roles, course memberships, classroom ownership, session-course assignment, aggregate dashboards, comparisons, UTC daily/weekly/monthly trends, advisory notifications, optimistic-lock notes, audit entries, advanced evidence filtering, and aggregate CSV/JSON/PDF exports. `AUTH_ENABLED=false` preserves the local administrator workflow. For signed production-style sessions set `AUTH_ENABLED=true`, `AUTH_MODE=TOKEN`, and a random `AUTH_SECRET_KEY` of at least 32 characters. `AUTH_MODE=DEVELOPMENT` explicitly enables the local `X-User-Id` adapter; never use that mode in production. HTTP and WebSocket resources enforce Administrator, Instructor, Reviewer, or Viewer permissions.
+
+Aggregates average only available evidence and report contributing-session counts, coverage, confidence, contexts, methodology versions, and limitations. Comparisons warn about incompatible contexts, large coverage differences, or methodology changes. Notifications are deduplicated and advisory; notes use version checks to prevent silent overwrite.
 
 ## API
 
