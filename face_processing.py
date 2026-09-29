@@ -1,3 +1,8 @@
+# ======================================================================================
+# LEGACY / DEPRECATED: part of the original Flask + DeepFace prototype. It is NOT used by
+# AmbiSense (FastAPI backend/ + React frontend/) and must not be integrated with it: it
+# performs facial recognition, which AmbiSense deliberately does not. Kept only for reference.
+# ======================================================================================
 from ultralytics import YOLO
 import cv2
 import os

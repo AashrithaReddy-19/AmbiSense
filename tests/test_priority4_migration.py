@@ -1,5 +1,6 @@
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine,inspect,text
 
 def test_priority4_auth_upgrade_from_priority4_schema(tmp_path,monkeypatch):
@@ -10,5 +11,6 @@ def test_priority4_auth_upgrade_from_priority4_schema(tmp_path,monkeypatch):
     monkeypatch.setenv('DATABASE_URL',url)
     get_settings.cache_clear();config=Config('alembic.ini');command.stamp(config,'20260823_priority4');command.upgrade(config,'head')
     assert {'password_hash','token_version'}<=set(inspect(engine).get_columns('users')[index]['name'] for index in range(len(inspect(engine).get_columns('users'))))
-    with engine.connect() as connection:assert connection.execute(text('SELECT version_num FROM alembic_version')).scalar_one()=='20260826_pipeline_jobs'
+    expected_head=ScriptDirectory.from_config(config).get_current_head()
+    with engine.connect() as connection:assert connection.execute(text('SELECT version_num FROM alembic_version')).scalar_one()==expected_head
     monkeypatch.setenv('DATABASE_URL',original_url);get_settings.cache_clear();get_settings()

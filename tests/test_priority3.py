@@ -37,4 +37,4 @@ def test_grounded_content_fusion_and_api_evidence():
         transcript=client.get(f"/api/v1/sessions/{session_id}/transcript").json(); assert transcript["segments"][0]["speaker_role"]=="UNKNOWN"
         content=client.get(f"/api/v1/sessions/{session_id}/content").json(); assert content["status"]=="AVAILABLE"
         graph=client.get(f"/api/v1/sessions/{session_id}/evidence-graph").json(); assert graph["status"]=="AVAILABLE" and graph["edges"]
-        search=client.post("/api/v1/search",json={"query":f"concept chlorophyll session {session_id}"}).json(); assert search["matches"][0]["evidence_segment_id"]==f"p3-segment-{session_id}"
+        search=client.post("/api/v1/search",json={"query":f"concept chlorophyll session {session_id}","data_source":"ALL"}).json(); assert search["matches"][0]["evidence_segment_id"]==f"p3-segment-{session_id}"

@@ -33,6 +33,6 @@ def test_upload_processing_reports_and_search(tmp_path):
         assert client.get(f"/api/sessions/{session_id}/report?format=pdf").headers["content-type"] == "application/pdf"
         reports = client.get("/api/v1/reports", params={"data_source":"ALL","page_size":100}).json()["items"]
         assert any(row["session_id"] == session_id and row["report_ready"] for row in reports)
-        search = client.post("/api/search", json={"query": "engagement below 90"}).json()
+        search = client.post("/api/search", json={"query": "engagement below 90", "data_source": "ALL"}).json()
         assert search["matches"]
     settings.demo_mode = previous_mode

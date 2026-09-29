@@ -34,7 +34,10 @@ def ensure_session_columns() -> None:
         for name, declaration in additions.items():
             if name not in existing:
                 connection.execute(text(f"ALTER TABLE sessions ADD COLUMN {name} {declaration}"))
-        connection.execute(text("UPDATE sessions SET is_test=1, data_source='TEST' WHERE lower(name) LIKE 'priority %' OR lower(name) LIKE 'p4 %' OR lower(name) LIKE 'api test%' OR lower(name) LIKE 'acceptance%' OR lower(name) LIKE 'websocket schema test%'"))
+        if "is_test" not in existing:
+            # One-time backfill when a legacy database first gains the column. It never runs again, so a normal start
+            # cannot reclassify sessions that an operator has since labelled (or un-labelled).
+            connection.execute(text("UPDATE sessions SET is_test=1, data_source='TEST' WHERE lower(name) LIKE 'priority %' OR lower(name) LIKE 'p4 %' OR lower(name) LIKE 'api test%' OR lower(name) LIKE 'acceptance%' OR lower(name) LIKE 'websocket schema test%'"))
     snapshot_columns = {column["name"] for column in inspect(engine).get_columns("analytics_snapshots")}
     observation_columns = {column["name"] for column in inspect(engine).get_columns("student_observations")} if "student_observations" in inspect(engine).get_table_names() else set()
     with engine.begin() as connection:

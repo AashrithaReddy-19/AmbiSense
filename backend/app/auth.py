@@ -75,7 +75,7 @@ def authorize_http_request(request:Request):
  settings=get_settings()
  if not settings.auth_enabled:return
  path=request.url.path
- if path in {"/api/health","/api/v1/auth/login"} or path.startswith(("/docs","/openapi")):return
+ if path in {"/api/health","/api/ready","/api/v1/auth/login"} or path.startswith(("/docs","/openapi")):return
  with SessionLocal() as db:
   raw=request.headers.get("authorization");uid=request.headers.get("x-user-id");user=resolve_principal(raw,int(uid) if uid and uid.isdigit() else None,db)
   parts=path.strip("/").split("/");session=None;classroom_id=None;course_id=None
@@ -110,4 +110,19 @@ def authorize_http_request(request:Request):
   if write and any(x in path for x in ("/videos/upload","/sessions/start","/classrooms","/courses")) and user.role not in {"ADMINISTRATOR","INSTRUCTOR"}:raise HTTPException(403,"Instructor permission required")
   if write and (path in {"/api/sessions","/api/uploads","/api/seat-configurations"} or "/archive" in path or path.startswith("/api/v1/sessions/bulk-")) and user.role not in {"ADMINISTRATOR","INSTRUCTOR"}:raise HTTPException(403,"Instructor permission required")
   if write and ("/stop" in path or "/activities" in path or (request.method=="DELETE" and "/sessions/" in path)) and user.role not in {"ADMINISTRATOR","INSTRUCTOR"}:raise HTTPException(403,"Instructor permission required")
-  if any(x in path for x in ("/settings","/cleanup","/retention")) and user.role!="ADMINISTRATOR":raise HTTPException(403,"Administrator permission required")
+  if any(x in path for x in ("/settings","/cleanup","/retention","/system/diagnostics","/system/jobs")) and user.role!="ADMINISTRATOR":raise HTTPException(403,"Administrator permission required")
+def bulk_accessible_sessions(db,user,sessions):
+ """Same rule as can_access_session, evaluated for many sessions with a constant number of queries (no per-row lookups)."""
+ sessions=list(sessions)
+ if user.role=="ADMINISTRATOR" or not sessions:return sessions
+ member_courses=set(db.scalars(select(models.CourseMembership.course_id).where(models.CourseMembership.user_id==user.id)).all())
+ owned_courses=set(db.scalars(select(models.Course.id).where(models.Course.owner_user_id==user.id)).all())
+ course_ok=member_courses|owned_courses
+ classroom_ids={s.classroom_id for s in sessions if s.classroom_id is not None}
+ owners={row.id:row.owner_user_id for row in db.execute(select(models.Classroom.id,models.Classroom.owner_user_id).where(models.Classroom.id.in_(classroom_ids))).all()} if classroom_ids else {}
+ member_classrooms=set(db.scalars(select(models.Course.classroom_id).where(models.Course.id.in_(member_courses),models.Course.classroom_id.in_(classroom_ids))).all()) if member_courses and classroom_ids else set()
+ def classroom_ok(classroom_id):
+  if classroom_id is None:return True
+  if classroom_id not in owners:return False
+  return owners[classroom_id] in {None,user.id} or classroom_id in member_classrooms
+ return [s for s in sessions if (s.course_id and s.course_id in course_ok) or classroom_ok(s.classroom_id)]

@@ -1,5 +1,7 @@
 # Priority 4 Final Acceptance Audit
 
+> **Historical snapshot.** Written on an earlier date and **not kept current**. For the present state see [docs/FEATURE_STATUS.md](docs/FEATURE_STATUS.md) and [README.md](README.md).
+
 Audit date: 2026-08-24
 
 ## Result

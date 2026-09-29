@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from backend.app import models
 from backend.app.config import get_settings
+from backend.app.timeutil import utc_now_naive
 from backend.app.database import Base, SessionLocal, engine
 from backend.app.main import app
 from backend.app.services.audio_intelligence import derive_content, fuse, run_diarization, transcribe
@@ -16,7 +17,7 @@ from backend.app.services.report_generator import create_csv_report, create_pdf_
 
 def seed(db,name="Priority 3 completion",context="LECTURE"):
     session=models.Session(name=name,status="COMPLETED",activity_context=context);db.add(session);db.commit()
-    audio=models.AudioAnalysis(session_id=session.id,status="AVAILABLE",duration=30,quality_status="GOOD",quality={"score":80,"silence_ratio":.2},coverage={"voiced_ratio":.8},updated_at=datetime.utcnow())
+    audio=models.AudioAnalysis(session_id=session.id,status="AVAILABLE",duration=30,quality_status="GOOD",quality={"score":80,"silence_ratio":.2},coverage={"voiced_ratio":.8},updated_at=utc_now_naive())
     segment=models.TranscriptSegment(id=f"segment-{session.id}",session_id=session.id,start_seconds=2,end_seconds=9,original_text="Energy means capacity to do work?",confidence=.9,language="en",speaker_role="UNKNOWN",provider="test-adapter",generated=True,metadata_json={"anonymous":True})
     db.add_all([audio,segment,models.AnalyticsSnapshot(session_id=session.id,timestamp=9,attention_score=70,engagement_score=60)]);db.commit();derive_content(db,session.id,"AVAILABLE",audio,get_settings());fusion=fuse(db,session.id,get_settings());db.commit();return session,audio,segment,fusion
 
@@ -25,7 +26,7 @@ def test_retention_is_idempotent_audited_and_preserves_aggregates():
     Base.metadata.create_all(engine);settings=get_settings();previous=(settings.transcript_retention_enabled,settings.transcript_retention_days);settings.transcript_retention_enabled=True;settings.transcript_retention_days=7
     try:
         with SessionLocal() as db:
-            session,audio,segment,_=seed(db,"Priority 3 expired");segment_id=segment.id;audio.updated_at=datetime.utcnow()-timedelta(days=8);db.commit();discourse_id=db.scalar(select(models.DiscourseAnalysis.id).where(models.DiscourseAnalysis.session_id==session.id))
+            session,audio,segment,_=seed(db,"Priority 3 expired");segment_id=segment.id;audio.updated_at=utc_now_naive()-timedelta(days=8);db.commit();discourse_id=db.scalar(select(models.DiscourseAnalysis.id).where(models.DiscourseAnalysis.session_id==session.id))
             first=cleanup_expired_transcripts(db,settings);second=cleanup_expired_transcripts(db,settings)
             assert first["changed"]==1 and second["changed"]==0
             assert db.get(models.AudioAnalysis,audio.id).status=="RETENTION_DELETED"

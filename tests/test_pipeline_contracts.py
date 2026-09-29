@@ -32,10 +32,11 @@ def test_trends_use_coverage_weighting_and_keep_unavailable_as_gap():
         second=models.Session(name="B",status="COMPLETED",analytics_mode="REAL",created_at=datetime(2026,8,19),activity_context="LECTURE")
         empty=models.Session(name="C",status="COMPLETED",analytics_mode="REAL",created_at=datetime(2026,8,26),activity_context="LECTURE")
         db.add_all([first,second,empty]);db.flush()
+        envelope=lambda value:{"metrics":{"observable_participation":metric_envelope("observable_participation",value,valid_observations=10,eligible_observations=10)}}
         db.add_all([
-            models.AnalyticsSnapshot(session_id=first.id,timestamp=0,student_count=10,engagement_score=20),
-            models.AnalyticsSnapshot(session_id=second.id,timestamp=0,student_count=10,engagement_score=80),
-            models.AnalyticsSnapshot(session_id=second.id,timestamp=1,student_count=10,engagement_score=80),
+            models.AnalyticsSnapshot(session_id=first.id,timestamp=0,student_count=10,engagement_score=20,details=envelope(20)),
+            models.AnalyticsSnapshot(session_id=second.id,timestamp=0,student_count=10,engagement_score=80,details=envelope(80)),
+            models.AnalyticsSnapshot(session_id=second.id,timestamp=1,student_count=10,engagement_score=80,details=envelope(80)),
         ]);db.commit()
         points=trend_buckets(db,[first,second,empty],"weekly",3,"observable_participation")
         available=next(point for point in points if point["value"] is not None)
@@ -60,5 +61,5 @@ def test_live_websocket_decodes_acknowledges_and_preserves_real_zero():
         assert update["metrics"]["occupancy"]["available"] is True
         assert update["metrics"]["occupancy"]["value"]==0
         assert update["metrics"]["visual_orientation"]["available"] is False
-        assert update["metrics"]["visual_orientation"]["reason"]=="no_detectable_person"
+        assert update["metrics"]["visual_orientation"]["reason"]=="no_person_detected"
         socket.send_text("STOP")

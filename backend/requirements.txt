@@ -7,6 +7,11 @@ psycopg[binary]>=3.2
 pydantic-settings>=2.7,<3
 opencv-python-headless>=4.10
 ultralytics>=8.3
+# scipy 1.18.1 ships a broken cp313-win_amd64 wheel (scipy.spatial.transform._rigid_transform
+# imports _promote from the compiled _rotation extension, which doesn't export it there).
+# Pin below that until it's fixed upstream; ultralytics's ByteTrack tracker depends on
+# scipy.spatial.distance transitively via lap/matching.
+scipy>=1.13,<1.18
 mediapipe>=1.0
 lap>=0.5.12
 torch>=2.5
@@ -15,3 +20,5 @@ pandas>=2.2
 pytest>=8.3
 httpx>=0.28
 reportlab>=4.2
+# Optional: only imported when RATE_LIMIT_BACKEND=redis (shared rate limits across workers).
+redis>=5,<7

@@ -1,28 +1,84 @@
+# AmbiSense: API + dashboard + PostgreSQL. Redis is OPTIONAL and only used when you enable the "redis"
+# profile AND set RATE_LIMIT_BACKEND=redis (otherwise rate limiting is in-process and Redis is not started).
+#
+#   docker compose up --build                       # API + dashboard + PostgreSQL
+#   docker compose --profile redis up --build       # additionally start Redis
+#
+# Set real secrets in a .env file next to this file (never commit it): POSTGRES_PASSWORD, AUTH_SECRET_KEY, ...
+name: ambisense
+
 services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ambisense
+      POSTGRES_USER: ambisense
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-before-any-shared-use}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ambisense -d ambisense"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # No published port: only the backend reaches the database, over the compose network.
+
+  redis:
+    profiles: ["redis"]
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]   # rate-limit counters only; nothing worth persisting
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   backend:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    ports: ["8000:8000"]
+      args:
+        INSTALL_FFMPEG: ${INSTALL_FFMPEG:-false}
+    restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+psycopg://ambisense:ambisense@postgres:5432/ambisense
+      DATABASE_URL: postgresql+psycopg://ambisense:${POSTGRES_PASSWORD:-change-me-before-any-shared-use}@postgres:5432/ambisense
       DEMO_MODE: ${DEMO_MODE:-false}
-    volumes: ["./videos:/app/videos", "./reports:/app/reports", "./models:/app/models"]
-    depends_on: [postgres, redis]
+      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      AUTH_MODE: ${AUTH_MODE:-TOKEN}
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      TRUSTED_HOSTS: ${TRUSTED_HOSTS:-*}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-500}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      RATE_LIMIT_BACKEND: ${RATE_LIMIT_BACKEND:-memory}
+      REDIS_URL: ${REDIS_URL:-}
+      AUDIO_ANALYTICS_ENABLED: ${AUDIO_ANALYTICS_ENABLED:-false}
+    volumes:
+      - videos:/app/videos
+      - reports:/app/reports
+      - logs:/app/logs
+      - ./models:/app/models:ro     # MediaPipe landmarker .task files
+    ports:
+      - "127.0.0.1:8000:8000"       # API docs at http://127.0.0.1:8000/docs; the dashboard reaches the API through nginx
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   frontend:
     build:
       context: .
       dockerfile: frontend/Dockerfile
-    ports: ["5173:80"]
-    depends_on: [backend]
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: ambisense
-      POSTGRES_USER: ambisense
-      POSTGRES_PASSWORD: ambisense
-    volumes: ["postgres_data:/var/lib/postgresql/data"]
-  redis:
-    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-5173}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+
 volumes:
   postgres_data:
+  videos:
+  reports:
+  logs:

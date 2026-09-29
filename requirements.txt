@@ -1,3 +1,4 @@
+# LEGACY / DEPRECATED: dependencies of the original Flask + DeepFace prototype (app.py). AmbiSense uses backend/requirements.txt.
 Flask
 torch
 ultralytics==8.0.196

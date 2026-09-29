@@ -16,3 +16,9 @@ Region heat maps reuse session-scoped anonymous observations. Camera visibility 
 Audio quality uses windowed RMS voice activity, silence ratio, clipping ratio, and an estimated signal-to-noise ratio. Transcript-derived questions, definitions, key terms, and chapters are extractive and cite source segment IDs/timestamps. Unknown speaker roles are not guessed. Fusion excludes unavailable evidence and renormalizes remaining weights rather than treating missing values as zero. Lecture, examination, group-discussion, writing, reading, presentation, video-screening, break, and custom contexts use explicit versioned relevance rules. Reviewer-excluded/incorrect evidence is retained for traceability but carries zero effective weight and an explanation.
 
 Cross-session aggregates include non-archived sessions and only available metric values; each envelope reports its contributing-session count. Contexts and methodology versions remain explicit rather than silently mixed. Comparisons flag context differences, coverage gaps above 30 percentage points, methodology-version differences, and insufficient metrics. UTC trend responses implement daily, ISO-weekly, monthly and per-session buckets. Rolling averages use only prior compatible context/version buckets, require at least two available values, report their contributing-bucket count, and never substitute zero for missing evidence.
+
+## See also
+
+- [docs/METRICS.md](docs/METRICS.md): plain-language definition, required evidence, limitations and contexts for every metric, and the availability contract.
+- [docs/EVALUATION.md](docs/EVALUATION.md): how accuracy would be measured. **These methods are not validated on real classroom footage.**
+- Wording: results are called *estimates*, *indicators* and *observations*; never verified attendance, and never statements about an individual's attention, engagement, honesty or performance.

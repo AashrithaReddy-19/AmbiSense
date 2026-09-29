@@ -46,7 +46,10 @@ class Settings(BaseSettings):
     track_iou_gate: float = 0.55
     minimum_metric_coverage: float = 0.2
     max_reference_image_mb: int = 10
-    test_session_cleanup_enabled: bool = True
+    # Nothing here runs at startup unless the operator opts in: the background loop needs SCHEDULED_CLEANUP_ENABLED, and
+    # each task inside it needs its own flag. Manual, confirmed cleanup from the API does not need either.
+    scheduled_cleanup_enabled: bool = False
+    test_session_cleanup_enabled: bool = False
     test_session_cleanup_age_hours: int = 24
     test_session_cleanup_action: str = "ARCHIVE"
     test_session_cleanup_interval_minutes: int = 60
@@ -73,8 +76,23 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     demo_mode: bool = False
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    trusted_hosts: str = "*"
+    rate_limit_enabled: bool = True
+    rate_limit_backend: str = "memory"
+    redis_url: str = ""
+    rate_limit_login_per_minute: int = 10
+    rate_limit_upload_per_minute: int = 20
+    rate_limit_search_per_minute: int = 60
+    rate_limit_analytics_per_minute: int = 120
+    rate_limit_report_per_minute: int = 60
+    job_runner_mode: str = "IN_PROCESS"
+    evaluation_dir: Path = ROOT_DIR / "evaluation"
 
     model_config = SettingsConfigDict(env_file=ROOT_DIR / ".env", extra="ignore")
+
+    @property
+    def trusted_host_list(self) -> list[str]:
+        return [item.strip() for item in self.trusted_hosts.split(",") if item.strip()] or ["*"]
 
     @property
     def cors_origin_list(self) -> list[str]:

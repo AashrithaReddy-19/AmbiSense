@@ -1,19 +1,53 @@
-# AmbiSense Architecture
+# AmbiSense architecture
 
-The React/Vite client calls the FastAPI REST API and uses session WebSockets. Uploaded videos enter a persisted `QUEUED` session, then move through `INITIALIZING`, `PROCESSING`, `FINALIZING`, and `COMPLETED`. The processor samples frames, runs anonymous YOLO/ByteTrack detection plus optional MediaPipe face/pose landmarks, validates derived metrics, persists snapshots/tracks/quality, and creates an annotated output.
+```
+Browser (React + TypeScript + Vite, Recharts, route-level code splitting)
+   │  REST  /api/*      WebSocket  /ws/live/{id}, /ws/sessions/{id}
+   ▼
+Nginx (containers)  ──►  FastAPI  ──►  SQLAlchemy ──► SQLite (local) / PostgreSQL (containers)
+                          │  │
+                          │  └─ services: jobs, retention, layout_validation, rate_limit, startup_checks,
+                          │     settings_catalog, audio_capabilities, semantic_search, report_generator, analytics
+                          ▼
+                    VideoProcessor (in-process job runner)
+                          │ frames → YOLOv8 person detection → ByteTrack anonymous tracks
+                          │        → MediaPipe face/pose landmarks (when models are present)
+                          │        → per-interval snapshots with canonical metric availability
+                          ▼
+                    videos/ (uploads, annotated video)   reports/ (PDF, CSV, metrics CSV)
+```
 
-Live browser frames use `/ws/live/{session_id}`. Stored-session updates use `/ws/sessions/{session_id}` with sequence numbers; the client rejects duplicates and reconnects with bounded exponential backoff. SQLite is the local default and PostgreSQL is supported through `DATABASE_URL`. Alembic owns normalized schema migrations; the additive SQLite compatibility helper remains for existing local databases.
+The legacy Flask/DeepFace prototype at the repository root is **not** part of this architecture (see README).
 
-Privacy boundary: track UUIDs are session-local and anonymous. There is no face recognition, cross-session matching, or raw face-crop storage.
+## Request path and cross-cutting behaviour
 
-Classroom layouts are versioned and store normalized polygons. Sampled anonymous box centers are matched to the active layout and exposed only as session-scoped region aggregates. Activity segments modify metric relevance and limitations. Event review controls report inclusion without rewriting source evidence.
+1. **Request-ID middleware** (outermost): accepts a well-formed `X-Request-ID` or generates one; logs method, path (never the query string), status and duration; adds the ID to every log record and error body.
+2. **Trusted host / CORS** (explicit origins only).
+3. **Authorization boundary**: when authentication is enabled, a middleware resolves the caller and enforces session/classroom/course access before the route runs; routes add permission dependencies (`require("…")`). Session lists use `bulk_accessible_sessions`, which evaluates access with a constant number of queries, and access is applied before pagination.
+4. **Rate limiting** as route dependencies (login, upload, search, analytics, report): in-memory by default, Redis adapter optional.
+5. **Error handlers** turn every failure into the canonical `{detail, error{code,message,details,request_id}}` shape; unexpected exceptions return only a reference.
+6. **Start-up**: configuration is validated (invalid → refuse to start), tables are ensured, saved runtime settings are re-applied, and a cleanup scheduler archives or deletes test-flagged sessions and expired transcripts according to configuration.
 
-Reference images are validated and retained in the configured classroom-reference directory. Region preview reads only the latest stored anonymous observations and is clearly marked preview-only. Heat maps aggregate existing observations by region and requested time window; missing evidence remains unavailable. A lightweight development scheduler archives or deletes only explicit test/API sessions and writes an idempotent cleanup audit ledger.
+## Data model highlights
 
-When explicitly enabled, the Priority 3 path uses FFmpeg to extract mono PCM audio and stores quality/coverage metadata. A provider adapter may create anonymous timestamped transcript segments; unavailable providers create no text. Extractive discourse/content records retain transcript evidence IDs. Fusion persists methodology version, configured/effective weights, confidence, coverage, and limitations.
+`sessions` (state, source, activity context, classroom/course, data-source flags) → `analytics_snapshots` (per-interval metrics with canonical availability envelopes) · `quality_assessments` · `student_observations`/`anonymous_tracks` (session-local anonymous IDs) · `events` (with reviewer state) · `reports` (unique per session+format) · audio/transcript/discourse/fusion tables · `classroom_layouts` → `classroom_regions` (normalized polygons, versioned) · `users`, `courses`, `course_memberships` · `notifications` (per-user, de-duplicated) · `collaboration_notes` (versioned, author-attributed) · `audit_entries` and `cleanup_audits` (append-only).
 
-The shared cleanup scheduler also enforces raw audio/transcript retention and records actions in `cleanup_audits`; aggregate discourse/fusion remains available after raw evidence removal. Transcript exports reuse the report directory and are denied after retention deletion. Context rules and Priority 2 review states determine fusion inclusion, with exclusions retained in the Evidence Graph. The diarization protocol accepts session-local time spans only and deliberately discards provider identity/cluster labels.
+There is no face image, embedding or identity column anywhere. Track IDs are meaningful only within one session.
 
-Priority 4 introduces opt-in RBAC, signed expiring tokens with revocation, courses/memberships, classroom ownership, session-course links, deduplicated notifications, versioned notes, and audit entries. A centralized boundary authenticates every protected HTTP route and resolves session, classroom, course, transcript, event, content, report, layout and note parents before access. List/search/dashboard results are filtered to accessible sessions. WebSockets authenticate before acceptance. Authentication-disabled development resolves to an explicit local administrator; `AUTH_MODE=DEVELOPMENT` is the only mode that accepts `X-User-Id`, while `AUTH_MODE=TOKEN` never does.
+## Evidence pipeline and availability
 
-The shared session-evidence envelope drives classroom/course dashboards, comparisons, UTC daily/weekly/monthly trends, rolling averages, alerts, and CSV/JSON/PDF aggregate exports. Missing evidence remains null, activity contexts and methodology versions are separated, and every aggregate identifies contributing sessions, coverage, confidence, exclusions and limitations.
+Each interval stores a `MetricAvailability` per metric (value, available, reason, coverage, confidence, valid/total observations). Session summaries, trends and comparisons aggregate **available** evidence only, weighted by coverage, grouped by activity context and methodology version. Unavailable is never averaged in as zero. See [docs/METRICS.md](docs/METRICS.md).
+
+## Jobs, retention and deletion
+
+Video jobs are rows in `sessions`, claimed atomically and retried idempotently ([docs/JOBS.md](docs/JOBS.md)). Deleting a session removes every dependent row (including notifications and session-scoped notes) in one transaction, then removes its files, **only when they resolve inside the configured upload/report directories**, and records the action in `audit_entries`. Artifact deletion keeps analytics evidence. Retention by age only *archives* (reversible).
+
+## Performance decisions
+
+- List endpoints avoid N+1: Reports use three grouped queries for any page size; trend, comparison, dashboard and filter endpoints load all per-session datasets in a fixed number of queries; access checks are batched. Query-count regression tests enforce this.
+- Front end: Recharts (~400 KB) lives in a separate `charts` chunk loaded on demand; React and the router are a `react` chunk; heavier pages are route-level lazy chunks. The first load is the entry chunk plus `react`.
+- Front-end polling (Reports) runs only while a job is active and is cleared on unmount; every request-driven view discards stale responses.
+
+## Frontend structure
+
+Pages under `frontend/src/pages`, shared UI under `components` (Tabs, Dialog/ConfirmDialog, States, StatusBadge, MetricValue, PrivacyNotice, Toast, Pagination…), state helpers under `hooks` (`useUrlFilters` keeps shareable filters in the URL with Apply/Reset; `useRemoteList`; `useUndoRedo`; `useUnsavedChangesGuard`), and the API client in `services`. Downloads go through the authenticated client so the bearer token is sent.

@@ -1,4 +1,5 @@
 from datetime import datetime
+from .timeutil import utc_now_naive
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -36,7 +37,7 @@ class Session(Base):
     progress: Mapped[float] = mapped_column(Float, default=0)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
     failure_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
@@ -108,7 +109,7 @@ class Report(Base):
     session_id: Mapped[int] = mapped_column(ForeignKey("sessions.id"), index=True)
     format: Mapped[str] = mapped_column(String(8))
     path: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive)
 
 
 class StudentObservation(Base):
@@ -159,7 +160,7 @@ class RuntimeSetting(Base):
     __tablename__ = "settings"
     key: Mapped[str] = mapped_column(String(80), primary_key=True)
     value: Mapped[object] = mapped_column(JSON)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, onupdate=utc_now_naive)
 
 
 class AnonymousTrack(Base):
@@ -200,7 +201,7 @@ class ClassroomLayout(Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     reference_image_path: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive)
     regions: Mapped[list["ClassroomRegion"]] = relationship(cascade="all, delete-orphan", order_by="ClassroomRegion.id")
 
 
@@ -235,7 +236,7 @@ class CleanupAudit(Base):
     action: Mapped[str] = mapped_column(String(20))
     result: Mapped[str] = mapped_column(String(20))
     details: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive)
 
 
 class AudioAnalysis(Base):
@@ -253,7 +254,7 @@ class AudioAnalysis(Base):
     limitations: Mapped[list] = mapped_column(JSON, default=list)
     provider: Mapped[str | None] = mapped_column(String(80), nullable=True)
     model_version: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, onupdate=utc_now_naive)
 
 
 class TranscriptSegment(Base):
@@ -280,7 +281,7 @@ class TranscriptCorrection(Base):
     segment_id: Mapped[str] = mapped_column(ForeignKey("transcript_segments.id"), index=True)
     previous_text: Mapped[str] = mapped_column(Text)
     corrected_text: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive)
 
 
 class SpeakerSegment(Base):
@@ -347,7 +348,7 @@ class EvidenceFusionResult(Base):
     components: Mapped[list] = mapped_column(JSON, default=list)
     limitations: Mapped[list] = mapped_column(JSON, default=list)
     weights: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive)
 
 
 class User(Base):
@@ -359,7 +360,7 @@ class User(Base):
     active: Mapped[bool]=mapped_column(Boolean,default=True)
     password_hash: Mapped[str | None]=mapped_column(Text,nullable=True)
     token_version: Mapped[int]=mapped_column(Integer,default=0)
-    created_at: Mapped[datetime]=mapped_column(DateTime,default=datetime.utcnow)
+    created_at: Mapped[datetime]=mapped_column(DateTime,default=utc_now_naive)
 
 
 class Course(Base):
@@ -372,7 +373,7 @@ class Course(Base):
     classroom_id: Mapped[int | None]=mapped_column(ForeignKey("classrooms.id"),nullable=True,index=True)
     owner_user_id: Mapped[int | None]=mapped_column(ForeignKey("users.id"),nullable=True,index=True)
     active: Mapped[bool]=mapped_column(Boolean,default=True)
-    created_at: Mapped[datetime]=mapped_column(DateTime,default=datetime.utcnow)
+    created_at: Mapped[datetime]=mapped_column(DateTime,default=utc_now_naive)
 
 
 class CourseMembership(Base):
@@ -397,7 +398,7 @@ class Notification(Base):
     dedupe_key: Mapped[str]=mapped_column(String(180))
     read_at: Mapped[datetime | None]=mapped_column(DateTime,nullable=True)
     dismissed_at: Mapped[datetime | None]=mapped_column(DateTime,nullable=True)
-    created_at: Mapped[datetime]=mapped_column(DateTime,default=datetime.utcnow)
+    created_at: Mapped[datetime]=mapped_column(DateTime,default=utc_now_naive)
 
 
 class CollaborationNote(Base):
@@ -409,8 +410,8 @@ class CollaborationNote(Base):
     body: Mapped[str]=mapped_column(Text)
     review_status: Mapped[str]=mapped_column(String(24),default="OPEN")
     version: Mapped[int]=mapped_column(Integer,default=1)
-    created_at: Mapped[datetime]=mapped_column(DateTime,default=datetime.utcnow)
-    updated_at: Mapped[datetime]=mapped_column(DateTime,default=datetime.utcnow,onupdate=datetime.utcnow)
+    created_at: Mapped[datetime]=mapped_column(DateTime,default=utc_now_naive)
+    updated_at: Mapped[datetime]=mapped_column(DateTime,default=utc_now_naive,onupdate=utc_now_naive)
 
 
 class AuditEntry(Base):
@@ -421,4 +422,4 @@ class AuditEntry(Base):
     resource_type: Mapped[str]=mapped_column(String(40))
     resource_id: Mapped[int | None]=mapped_column(Integer,nullable=True)
     details: Mapped[dict]=mapped_column(JSON,default=dict)
-    created_at: Mapped[datetime]=mapped_column(DateTime,default=datetime.utcnow)
+    created_at: Mapped[datetime]=mapped_column(DateTime,default=utc_now_naive)

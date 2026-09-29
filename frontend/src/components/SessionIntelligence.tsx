@@ -1,9 +1,10 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../services/api";
 const PAGE_SIZE=20,escapeRegExp=(value:string)=>value.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
-export function SessionIntelligence({sessionId}:{sessionId:string}){
+export function SessionIntelligence({sessionId,onLoaded}:{sessionId:string;onLoaded?:(data:{audio:any})=>void}){
+ const onLoadedRef=useRef(onLoaded);useEffect(()=>{onLoadedRef.current=onLoaded});
  const[data,setData]=useState<any>(null),[error,setError]=useState(""),[query,setQuery]=useState(""),[page,setPage]=useState(0),[editing,setEditing]=useState<string|null>(null),[draft,setDraft]=useState(""),[saving,setSaving]=useState(false),[saveError,setSaveError]=useState(""),[history,setHistory]=useState<any[]>([]);
- const load=()=>{Promise.all([api.get(`/v1/sessions/${sessionId}/audio`),api.get(`/v1/sessions/${sessionId}/transcript`),api.get(`/v1/sessions/${sessionId}/discourse`),api.get(`/v1/sessions/${sessionId}/content`),api.get(`/v1/sessions/${sessionId}/evidence-graph`)]).then(([audio,transcript,discourse,content,evidence])=>setData({audio:audio.data,transcript:transcript.data,discourse:discourse.data,content:content.data,evidence:evidence.data})).catch(()=>setError("Audio and transcript evidence could not be loaded."))};
+ const load=()=>{Promise.all([api.get(`/v1/sessions/${sessionId}/audio`),api.get(`/v1/sessions/${sessionId}/transcript`),api.get(`/v1/sessions/${sessionId}/discourse`),api.get(`/v1/sessions/${sessionId}/content`),api.get(`/v1/sessions/${sessionId}/evidence-graph`)]).then(([audio,transcript,discourse,content,evidence])=>{setData({audio:audio.data,transcript:transcript.data,discourse:discourse.data,content:content.data,evidence:evidence.data});onLoadedRef.current?.({audio:audio.data})}).catch(()=>setError("Audio and transcript evidence could not be loaded."))};
  useEffect(load,[sessionId]);const filtered=useMemo(()=>(data?.transcript.segments||[]).filter((s:any)=>!query||s.text.toLowerCase().includes(query.toLowerCase())),[data,query]),visible=filtered.slice(page*PAGE_SIZE,(page+1)*PAGE_SIZE);
  function highlighted(value:string){if(!query)return value;return value.split(new RegExp(`(${escapeRegExp(query)})`,`ig`)).map((part,index)=>part.toLowerCase()===query.toLowerCase()?<mark key={index}>{part}</mark>:part)}
  function seek(seconds:number){const video=document.querySelector("video") as HTMLVideoElement|null;if(video){video.currentTime=seconds;void video.play().catch(()=>undefined)}}

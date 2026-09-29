@@ -7,8 +7,62 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from .. import models
+from ..metrics import CANONICAL_FIELDS, LEGACY_METRIC, as_metric_availability
 from ..models import AnalyticsSnapshot, Event
 from ..crud import session_summary
+
+
+HIDDEN_SUMMARY_KEYS = {"recommendations", "metric_results", "status", "verified_attendance_rate"}
+SUMMARY_LABELS = {
+    "session_id": "Session", "snapshots": "Processed samples", "duration_seconds": "Duration (s)",
+    "average_occupancy_rate": "Average anonymous occupancy rate", "average_occupancy": "Average anonymous occupancy estimate",
+    "average_engagement": "Average observable participation indicator", "peak_engagement": "Peak observable participation indicator", "lowest_engagement": "Lowest observable participation indicator",
+    "average_attention": "Average visual-orientation estimate", "average_fatigue": "Average possible fatigue indicator", "total_yawns": "Yawning observations (max)",
+    "peak_students": "Peak anonymous occupancy estimate", "average_students": "Average anonymous occupancy estimate", "minimum_students": "Minimum anonymous occupancy estimate",
+    "peak_raised_hands": "Peak raised-hand observations", "total_participation_events": "Raised-hand observation events",
+}
+REPORT_NOTICES = (
+    "AmbiSense uses anonymous session-local tracking and does not identify students. Occupancy is an estimate and is not verified attendance.",
+    "These observational indicators must not be used as the sole basis for grading, discipline, attendance, or other high-impact decisions.",
+    "Not validated on real classroom footage. No verified accuracy or fairness result is currently available.",
+)
+
+
+def metric_availability_rows(db: Session, session_id: int) -> list[dict]:
+    """One row per canonical metric, derived from the most recent
+    AnalyticsSnapshot's stored evidence. Never fabricates evidence for
+    sessions or snapshots that predate this contract: a snapshot whose
+    details.metrics lacks a given metric key yields
+    reason="legacy_data_without_evidence" for that metric rather than a
+    guessed value."""
+    latest = db.scalar(
+        select(AnalyticsSnapshot).where(AnalyticsSnapshot.session_id == session_id).order_by(AnalyticsSnapshot.timestamp.desc())
+    )
+    metric_names = (
+        "occupancy", "peak_occupancy", "unoccupied_capacity", "visual_orientation",
+        "observable_participation", "prolonged_eye_closure", "possible_fatigue",
+        "yawning", "raised_hands",
+    )
+    stored = (latest.details.get("metrics") or {}) if latest else {}
+    rows = []
+    for name in metric_names:
+        envelope = stored.get(name)
+        contract = as_metric_availability(envelope) if envelope else dict(LEGACY_METRIC)
+        rows.append({"metric_name": name, **contract})
+    return rows
+
+
+def create_metrics_csv_report(db: Session, session_id: int) -> Path:
+    """Canonical metric-availability export: one row per metric with the
+    value/available/reason/coverage/confidence/valid/total contract, so a
+    reader never has to guess whether a blank cell means zero or missing."""
+    path = get_settings().report_dir / f"session_{session_id}_metrics.csv"
+    fields = ["metric_name", *CANONICAL_FIELDS]
+    with path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(metric_availability_rows(db, session_id))
+    return path
 
 
 def create_csv_report(db: Session, session_id: int) -> Path:
@@ -38,16 +92,16 @@ def create_pdf_report(db: Session, session_id: int) -> Path:
     canvas.setFont("Helvetica-Bold", 22)
     canvas.drawString(52, height - 65, "AMBISENSE")
     canvas.setFont("Helvetica", 10)
-    canvas.drawString(52, height - 82, "Ambient Classroom Intelligence & Engagement Suite")
+    canvas.drawString(52, height - 82, "Anonymous classroom evidence report")
     canvas.line(52, height - 95, width - 52, height - 95)
     y = height - 125
     for key, value in summary.items():
-        if key == "recommendations":
+        if key in HIDDEN_SUMMARY_KEYS:
             continue
         canvas.setFont("Helvetica-Bold", 10)
-        canvas.drawString(52, y, key.replace("_", " ").title())
+        canvas.drawString(52, y, SUMMARY_LABELS.get(key, key.replace("_", " ").capitalize()))
         canvas.setFont("Helvetica", 10)
-        canvas.drawString(230, y, str(value))
+        canvas.drawString(270, y, "Unavailable" if value is None else str(value))
         y -= 20
     y -= 10
     canvas.setFont("Helvetica-Bold", 12)
@@ -73,16 +127,32 @@ def create_pdf_report(db: Session, session_id: int) -> Path:
             for first, second in zip(points, points[1:]): canvas.line(*first, *second)
         y = chart_y - 24
         canvas.setFillColorRGB(0, 0, 0); canvas.setFont("Helvetica", 8)
-        canvas.drawString(52, y, "Green: Estimated Engagement | Blue: Visual Attention | Red: Fatigue Indicators")
+        canvas.drawString(52, y, "Green: Observable participation indicator | Blue: Visual-orientation estimate | Red: Possible fatigue indicator")
     events = db.scalars(select(Event).where(Event.session_id == session_id, Event.included_in_report.is_(True)).limit(12)).all()
     if events and y > 100:
         y -= 24; canvas.setFont("Helvetica-Bold", 11); canvas.drawString(52, y, "Important events")
         for event in events:
             y -= 14; canvas.setFont("Helvetica", 8); canvas.drawString(60, y, f"{event.timestamp:.1f}s - {event.event_type}: {event.message}"[:100])
+    metric_rows = metric_availability_rows(db, session_id)
+    if metric_rows and y > 140:
+        y -= 24; canvas.setFont("Helvetica-Bold", 11); canvas.drawString(52, y, "Metric availability")
+        for entry in metric_rows:
+            y -= 13; canvas.setFont("Helvetica", 8)
+            label = entry["metric_name"].replace("_", " ")
+            if entry["available"]:
+                coverage_text = "" if entry["coverage"] is None else f" · coverage {entry['coverage']*100:.0f}%"
+                confidence_text = "" if entry["confidence"] is None else f" · confidence {entry['confidence']*100:.0f}%"
+                line = f"{label}: {entry['value']}{coverage_text}{confidence_text}"
+            else:
+                line = f"{label}: Unavailable — {entry['reason'].replace('_', ' ')} ({entry['valid_observations']} of {entry['total_observations']} observations valid)"
+            canvas.drawString(60, y, line[:118])
     y -= 24; canvas.setFont("Helvetica-Bold", 10); canvas.drawString(52, max(70, y), "Methodology and privacy")
     canvas.setFont("Helvetica", 7); canvas.drawString(52, max(58, y - 12), "Anonymous YOLO tracking; landmark-derived head pose, EAR/MAR and pose participation. No face identity or face crops are stored.")
     canvas.setFont("Helvetica-Oblique", 8)
     canvas.drawString(52, 42, "Analytics are estimates for educational research, not medical or pedagogical diagnoses.")
+    canvas.setFont("Helvetica", 7)
+    for offset, notice in enumerate(REPORT_NOTICES):
+        canvas.drawString(52, 32 - offset * 8, notice[:150])
     audio=db.scalar(select(models.AudioAnalysis).where(models.AudioAnalysis.session_id==session_id)); discourse=db.scalar(select(models.DiscourseAnalysis).where(models.DiscourseAnalysis.session_id==session_id)); fusion=db.scalar(select(models.EvidenceFusionResult).where(models.EvidenceFusionResult.session_id==session_id).order_by(models.EvidenceFusionResult.id.desc())); chapters=db.scalars(select(models.LectureChapter).where(models.LectureChapter.session_id==session_id).order_by(models.LectureChapter.start_seconds).limit(8)).all(); content=db.scalars(select(models.GeneratedContentItem).where(models.GeneratedContentItem.session_id==session_id).order_by(models.GeneratedContentItem.ordinal).limit(10)).all()
     canvas.showPage(); y=height-60; canvas.setFont("Helvetica-Bold",16); canvas.drawString(52,y,"Audio, discourse, and evidence")
     lines=[f"Audio: {audio.status if audio else 'NOT_PROCESSED'}",f"Audio quality: {audio.quality_status if audio else 'UNAVAILABLE'}",f"Voice coverage: {audio.coverage.get('voiced_ratio') if audio else 'Unavailable'}",f"Discourse: {discourse.status if discourse else 'NOT_PROCESSED'}",f"Transcript: {'AVAILABLE' if content or chapters else 'UNAVAILABLE'}",f"Fusion: {fusion.value if fusion and fusion.value is not None else 'Insufficient evidence'}",f"Fusion confidence: {fusion.confidence if fusion else 'Unavailable'}",f"Context: {fusion.coverage.get('context') if fusion else 'Unavailable'}"]

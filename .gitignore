@@ -4,6 +4,9 @@ __pycache__/
 .pytest_cache/
 .test-tmp/
 ambisense.db
+ambisense_validation_*.db
+backups/
+dry_runs/
 logs/
 reports/*.csv
 reports/*.pdf

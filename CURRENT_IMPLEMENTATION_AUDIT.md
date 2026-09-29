@@ -1,5 +1,7 @@
 # AmbiSense Current Implementation Audit
 
+> **Historical snapshot.** Written on an earlier date and **not kept current**. For the present state see [docs/FEATURE_STATUS.md](docs/FEATURE_STATUS.md) and [README.md](README.md).
+
 Audit refreshed: 2026-08-22
 
 ## Priority 1 audit resolution

@@ -10,6 +10,7 @@ import torch
 from sqlalchemy import delete, select
 
 from .. import models
+from ..timeutil import utc_now_naive
 
 from ..config import Settings, get_settings
 from ..cv.attention import AttentionEstimator
@@ -23,8 +24,9 @@ from ..cv.quality import assess_frame_quality
 from ..cv.regions import assign_region
 from ..metrics import bounded_percentage, metric_envelope, safe_rate
 from .activity_context import context_limitations, metric_relevant
-from .report_generator import create_csv_report, create_pdf_report
+from .report_generator import create_csv_report, create_metrics_csv_report, create_pdf_report
 from ..database import SessionLocal
+from .jobs import claim_job, upsert_report
 from ..models import Alert, AnalyticsSnapshot, AnonymousTrack, Event, QualityAssessment, Session, StudentObservation
 
 
@@ -54,8 +56,10 @@ class VideoProcessor:
         session = db.get(Session, self.session_id)
         if not session:
             db.close(); return
-        if session.status in {"PROCESSING", "INITIALIZING", "FINALIZING", "COMPLETED"}: db.close(); return
-        session.status = "DECODING"; session.processing_stage = "DECODING"; session.started_at = session.started_at or datetime.utcnow(); session.error = None
+        # Atomic claim: if another worker already owns (or finished) this job, do nothing - never process twice.
+        if not claim_job(db, self.session_id): db.close(); return
+        db.refresh(session)
+        session.status = "DECODING"; session.processing_stage = "DECODING"; session.started_at = session.started_at or utc_now_naive(); session.error = None
         session.analytics_mode = "DEMO" if self.settings.demo_mode else "REAL"
         db.commit(); logger.info("[JOB] stage=DECODING session_id=%s job_id=%s", self.session_id, session.job_id)
         try:
@@ -80,19 +84,16 @@ class VideoProcessor:
                 else: row.status="FAILED"; row.limitations=[*row.limitations,"Optional audio processing failed; visual analytics remain available."]
                 db.commit()
             session.status = "GENERATING_REPORT"; session.processing_stage = "GENERATING_REPORT"; db.commit(); logger.info("[REPORT] generation started session_id=%s job_id=%s", self.session_id, session.job_id)
-            for report_format, factory in (("csv", create_csv_report), ("pdf", create_pdf_report)):
-                path = factory(db, self.session_id)
-                report = db.scalar(select(models.Report).where(models.Report.session_id == self.session_id, models.Report.format == report_format))
-                if report: report.path = str(path)
-                else: db.add(models.Report(session_id=self.session_id, format=report_format, path=str(path)))
+            for report_format, factory in (("csv", create_csv_report), ("pdf", create_pdf_report), ("metrics", create_metrics_csv_report)):
+                upsert_report(db, self.session_id, report_format, factory(db, self.session_id))
             db.commit(); logger.info("[REPORT] generation completed session_id=%s job_id=%s", self.session_id, session.job_id)
-            session.status = "COMPLETED"; session.processing_stage = "COMPLETED"; session.progress = 100; session.eta_seconds = 0; session.ended_at = datetime.utcnow()
+            session.status = "COMPLETED"; session.processing_stage = "COMPLETED"; session.progress = 100; session.eta_seconds = 0; session.ended_at = utc_now_naive()
             db.commit(); logger.info("[JOB] stage=COMPLETED session_id=%s job_id=%s", self.session_id, session.job_id)
         except Exception as error:
             logger.exception("Session %s processing failed", self.session_id)
             reference = uuid.uuid4().hex[:12]
             failure_code = "VIDEO_DECODING_FAILED" if isinstance(error, ValueError) else "MODEL_OR_PROCESSING_FAILED"
-            session.status = "FAILED"; session.processing_stage = "FAILED"; session.error = f"{str(error)[:240] or 'Video processing failed'} (reference {reference})"; session.failure_code = failure_code; session.internal_error_reference = reference; session.ended_at = datetime.utcnow(); db.commit()
+            session.status = "FAILED"; session.processing_stage = "FAILED"; session.error = f"{str(error)[:240] or 'Video processing failed'} (reference {reference})"; session.failure_code = failure_code; session.internal_error_reference = reference; session.ended_at = utc_now_naive(); db.commit()
             logger.error("[JOB] stage=FAILED session_id=%s job_id=%s code=%s reference=%s", self.session_id, session.job_id, failure_code, reference)
         finally:
             db.close()
@@ -230,7 +231,25 @@ class VideoProcessor:
         self.peak_occupancy=max(self.peak_occupancy,occupied); faces=students if valid_faces is None else valid_faces
         coverage=safe_rate(faces,students)
         session=db.get(Session,self.session_id); activity=session.activity_context if session else "LECTURE"
-        metrics={"visual_orientation":metric_envelope("visual_orientation",attention,valid_observations=faces,eligible_observations=students,confidence=(coverage or 0)/100,limitations=([] if faces else ["No usable face landmarks were available."])+context_limitations(activity,"visual_orientation"),model_enabled=metric_relevant(activity,"visual_orientation"),minimum_coverage=self.settings.minimum_metric_coverage),"observable_participation":metric_envelope("observable_participation",engagement,valid_observations=max(faces,students),eligible_observations=students,confidence=max((coverage or 0)/100,.3) if students else 0,limitations=context_limitations(activity,"observable_participation"),model_enabled=metric_relevant(activity,"observable_participation"),minimum_coverage=self.settings.minimum_metric_coverage),"possible_fatigue":metric_envelope("possible_fatigue",fatigue,valid_observations=faces,eligible_observations=students,confidence=(coverage or 0)/100,model_enabled=metric_relevant(activity,"possible_fatigue"),minimum_coverage=self.settings.minimum_metric_coverage)}
+        # Every metric AmbiSense exposes is computed once here as a canonical
+        # MetricAvailability envelope and persisted in details.metrics, so
+        # every reader (REST, WebSocket snapshot stream, trends, reports) is
+        # backed by the same evidence-derived contract instead of each
+        # recomputing (and potentially disagreeing on) availability.
+        metrics={
+            "visual_orientation":metric_envelope("visual_orientation",attention,valid_observations=faces,eligible_observations=students,confidence=(coverage or 0)/100,limitations=([] if faces else ["No usable face landmarks were available."])+context_limitations(activity,"visual_orientation"),model_enabled=metric_relevant(activity,"visual_orientation"),minimum_coverage=self.settings.minimum_metric_coverage),
+            "observable_participation":metric_envelope("observable_participation",engagement,valid_observations=max(faces,students),eligible_observations=students,confidence=max((coverage or 0)/100,.3) if students else 0,limitations=context_limitations(activity,"observable_participation"),model_enabled=metric_relevant(activity,"observable_participation"),minimum_coverage=self.settings.minimum_metric_coverage),
+            "possible_fatigue":metric_envelope("possible_fatigue",fatigue,valid_observations=faces,eligible_observations=students,confidence=(coverage or 0)/100,model_enabled=metric_relevant(activity,"possible_fatigue"),minimum_coverage=self.settings.minimum_metric_coverage),
+            "occupancy":metric_envelope("occupancy",occupied,valid_observations=1,eligible_observations=1,unit="count"),
+            "peak_occupancy":metric_envelope("peak_occupancy",self.peak_occupancy,valid_observations=1,eligible_observations=1,unit="count"),
+            "unoccupied_capacity":metric_envelope("unoccupied_capacity",max(0,seats-occupied),valid_observations=1,eligible_observations=1,unit="count"),
+            "prolonged_eye_closure":metric_envelope("prolonged_eye_closure",drowsy,valid_observations=faces,eligible_observations=students,confidence=(coverage or 0)/100,model_enabled=metric_relevant(activity,"prolonged_eye_closure"),minimum_coverage=self.settings.minimum_metric_coverage,unit="count"),
+            "yawning":metric_envelope("yawning",yawns,valid_observations=faces,eligible_observations=students,confidence=(coverage or 0)/100,model_enabled=metric_relevant(activity,"yawning"),minimum_coverage=self.settings.minimum_metric_coverage,unit="count"),
+            # Pose (hand-raise) evidence is approximated as available for every
+            # detected student; the pipeline does not currently track
+            # per-student pose-landmark validity at snapshot granularity.
+            "raised_hands":metric_envelope("raised_hands",raised_hands,valid_observations=students,eligible_observations=students,model_enabled=metric_relevant(activity,"raised_hands"),minimum_coverage=self.settings.minimum_metric_coverage,unit="count"),
+        }
         db.add(AnalyticsSnapshot(session_id=self.session_id, timestamp=round(timestamp, 2), student_count=students, visible_faces=faces, attendance=0, attention_score=bounded_percentage(attention) or 0, engagement_score=bounded_percentage(engagement) or 0, fatigue_score=bounded_percentage(fatigue) or 0, drowsiness_count=drowsy, yawning_count=yawns, occupied_seats=occupied, empty_seats=max(0, seats - occupied), current_occupancy_count=occupied,peak_occupancy_count=self.peak_occupancy,occupancy_rate=safe_rate(occupied,seats),estimated_unique_tracks=self.tracks.valid_unique_count() if mode=="REAL" else students,verified_attendance_rate=None,noise_level="UNKNOWN", distracted_students=distracted, raised_hands=raised_hands, looking_down_students=looking_down, looking_away_students=looking_away, details={"mode": mode, "identity": "anonymous", "activity_context":activity,"metrics":metrics,"expected_students":expected,"room_capacity":seats}))
         if engagement < 40: db.add(Alert(session_id=self.session_id, timestamp=timestamp, severity="WARNING", message="Estimated engagement fell below 40%."))
 

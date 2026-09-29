@@ -1,0 +1,43 @@
+# Never bake local data, secrets or caches into an image.
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.test-tmp
+.tools
+.coverage
+
+# Databases, uploads, reports, logs, backups
+*.db
+*.db-journal
+*.sqlite3
+backups
+dry_runs
+logs
+reports
+videos
+
+# Front-end build inputs are installed/built inside the image
+frontend/node_modules
+frontend/dist
+frontend/*.tsbuildinfo
+
+# Not needed at runtime
+tests
+docs
+*.md
+.vscode
+.idea
+
+# Legacy Flask/DeepFace prototype (deprecated, not part of AmbiSense)
+app.py
+face_processing.py
+fire.py
+noice.py
+projector.py
+temp.py
+templates

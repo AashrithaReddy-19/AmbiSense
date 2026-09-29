@@ -5,6 +5,7 @@ import numpy as np
 from fastapi.testclient import TestClient
 
 from backend.app.config import get_settings
+from backend.app.timeutil import utc_now_naive
 from backend.app.database import SessionLocal
 from backend.app.main import app
 from backend.app.models import Session, StudentObservation
@@ -46,7 +47,7 @@ def test_reference_frame_capture_from_retained_video(tmp_path):
 
 def test_cleanup_is_idempotent_and_never_touches_real_sessions():
     settings=get_settings(); previous=(settings.test_session_cleanup_enabled,settings.test_session_cleanup_age_hours,settings.test_session_cleanup_action)
-    settings.test_session_cleanup_enabled=True; settings.test_session_cleanup_age_hours=1; settings.test_session_cleanup_action='ARCHIVE'; old=datetime.utcnow()-timedelta(hours=2)
+    settings.test_session_cleanup_enabled=True; settings.test_session_cleanup_age_hours=1; settings.test_session_cleanup_action='ARCHIVE'; old=utc_now_naive()-timedelta(hours=2)
     try:
         with SessionLocal() as db:
             test=Session(name='Old API test cleanup',status='STOPPED',is_test=True,created_at=old); real=Session(name='Real classroom evidence',status='STOPPED',is_test=False,created_at=old); db.add_all([test,real]); db.commit(); test_id,real_id=test.id,real.id

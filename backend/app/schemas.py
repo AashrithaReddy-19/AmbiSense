@@ -1,6 +1,60 @@
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
+
+from .metrics import REASON_CODES
+
+
+MetricReason = Literal[
+    "no_observations",
+    "insufficient_valid_observations",
+    "no_person_detected",
+    "facial_landmarks_unavailable",
+    "pose_landmarks_unavailable",
+    "poor_frame_quality",
+    "low_light",
+    "excessive_blur",
+    "face_occluded",
+    "model_unavailable",
+    "inference_failed",
+    "not_applicable_for_activity",
+    "processing_incomplete",
+    "legacy_data_without_evidence",
+]
+
+
+class MetricAvailability(BaseModel):
+    """Canonical contract for every analytics metric in AmbiSense.
+
+    A metric is either available with a real, non-fabricated value, or
+    unavailable with a machine-readable reason. A genuine value of 0 is
+    always distinguishable from a missing value: 0 is a normal float/int,
+    a missing value is always Python None / JSON null, never a fallback
+    number or string.
+    """
+
+    value: float | int | None = None
+    available: bool
+    reason: MetricReason | None = None
+    coverage: float | None = Field(default=None, ge=0.0, le=1.0)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    valid_observations: int = Field(default=0, ge=0)
+    total_observations: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def _check_consistency(self):
+        if self.valid_observations > self.total_observations:
+            raise ValueError("valid_observations cannot exceed total_observations")
+        if self.available and self.value is None:
+            raise ValueError("available=true requires a non-null value")
+        if not self.available and self.value is not None:
+            raise ValueError("unavailable metrics must not report a fabricated value")
+        if not self.available and self.reason is None:
+            raise ValueError("unavailable metrics require a reason code")
+        if self.reason is not None and self.reason not in REASON_CODES:
+            raise ValueError(f"Unknown metric reason code: {self.reason}")
+        return self
 
 
 class SessionCreate(BaseModel):
@@ -19,6 +73,8 @@ class SessionRead(BaseModel):
     source_filename: str | None = None
     job_id: str | None = None
     data_source: str = "REAL"
+    classroom_id: int | None = None
+    course_id: int | None = None
     progress: float
     started_at: datetime | None
     ended_at: datetime | None
@@ -40,9 +96,31 @@ class SessionRead(BaseModel):
     annotated_video_path: str | None
     model_config = ConfigDict(from_attributes=True)
 
+    @computed_field
+    @property
+    def stale_kind(self) -> str | None:
+        """Set when the session claims to be running but no worker or camera connection in this API process owns it."""
+        from .services import jobs  # deferred: keeps schemas free of the job runner at import time
+        from .timeutil import utc_now_naive
+
+        return jobs.stale_kind(self.id, self.status, self.source_type, self.created_at, jobs.get_job_runner(), utc_now_naive())
+
+    @computed_field
+    @property
+    def stale(self) -> bool:
+        return self.stale_kind is not None
+
+    @computed_field
+    @property
+    def stale_reason(self) -> str | None:
+        from .services import jobs
+
+        return jobs.STALE_KIND_REASONS.get(self.stale_kind) if self.stale_kind else None
+
 
 class SearchRequest(BaseModel):
     query: str = Field(min_length=2, max_length=500)
+    data_source: str = Field(default="REAL", pattern="^(REAL|DEMO|TEST|ALL)$")
 
 
 class TranscriptCorrectionUpdate(BaseModel):
@@ -97,8 +175,14 @@ class CourseMembershipUpsert(BaseModel):
     membership_role: str = Field(default="VIEWER",pattern="^(INSTRUCTOR|REVIEWER|VIEWER)$")
 
 class CompareRequest(BaseModel):
-    session_ids: list[int] = Field(min_length=2,max_length=20)
+    session_ids: list[int] = Field(min_length=2,max_length=5)
     metrics: list[str] = Field(default_factory=lambda:["observable_participation","visual_orientation","audio_quality","question_count"])
+
+    @model_validator(mode="after")
+    def _check_unique_ids(self):
+        if len(set(self.session_ids)) != len(self.session_ids):
+            raise ValueError("session_ids must not contain duplicates")
+        return self
 
 class NoteCreate(BaseModel):
     scope_type: str = Field(pattern="^(SESSION|CLASSROOM|COURSE)$")

@@ -1,5 +1,7 @@
 # AmbiSense Phase 2 Implementation Summary
 
+> **Historical snapshot.** Written on an earlier date and **not kept current**. For the present state see [docs/FEATURE_STATUS.md](docs/FEATURE_STATUS.md) and [README.md](README.md).
+
 ## Files created
 
 - `CURRENT_IMPLEMENTATION_AUDIT.md`
