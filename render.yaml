@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: ambisense-backend
+    runtime: docker
+    plan: free
+    dockerfilePath: backend/Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    envVars:
+      - key: AUTH_ENABLED
+        value: "true"
+      - key: AUTH_MODE
+        value: TOKEN
+      - key: AUTH_SECRET_KEY
+        generateValue: true
+      - key: BOOTSTRAP_ADMIN_EMAIL
+        sync: false
+      - key: BOOTSTRAP_ADMIN_PASSWORD
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: DEMO_MODE
+        value: "false"
+      - key: PROCESS_EVERY_N_FRAMES
+        value: "6"

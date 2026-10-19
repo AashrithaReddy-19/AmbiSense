@@ -76,6 +76,10 @@ async def lifespan(_app: FastAPI):
         if not db.scalar(select(models.Classroom.id).limit(1)):
             db.add(models.Classroom(name="Classroom A", total_students=40, total_seats=40))
             db.commit()
+        if settings.bootstrap_admin_email and len(settings.bootstrap_admin_password) >= 12 and not db.scalar(select(models.User.id).limit(1)):
+            db.add(models.User(email=settings.bootstrap_admin_email.lower(), display_name="Administrator", role="ADMINISTRATOR", password_hash=hash_password(settings.bootstrap_admin_password)))
+            db.commit()
+            logger.info("Bootstrap administrator created: %s", settings.bootstrap_admin_email.lower())
         for saved in db.scalars(select(models.RuntimeSetting)).all():
             if hasattr(settings, saved.key):
                 setattr(settings, saved.key, saved.value)

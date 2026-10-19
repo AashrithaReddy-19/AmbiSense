@@ -68,6 +68,8 @@ class Settings(BaseSettings):
     auth_access_token_expire_minutes: int = 60
     auth_issuer: str = "ambisense"
     auth_audience: str = "ambisense-api"
+    bootstrap_admin_email: str = ""
+    bootstrap_admin_password: str = ""
     notification_quality_threshold: float = 45.0
     notification_participation_change_threshold: float = 20.0
     log_level: str = "INFO"

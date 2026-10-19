@@ -1,0 +1,10 @@
+.env
+ambisense.db
+videos/
+reports/
+logs/
+frontend/node_modules/
+frontend/dist/
+**/__pycache__/
+.pytest_cache/
+.git/
