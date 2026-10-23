@@ -75,6 +75,19 @@ Real analytics are the default. `DEMO_MODE=true` explicitly enables simulated an
 
 Open `/upload`, select a supported classroom recording, and start analysis. The API creates a persistent session and processes it in a background task. `/ws/analytics/{session_id}` streams current progress and metrics once per second. Completed sessions contain summaries, timelines, search matches, and report downloads.
 
+## Sample videos and demo data
+
+`sample_videos/` holds six short synthetic clips for trying the upload page. They are composed from the people photos bundled with Ultralytics, not real classroom recordings. Regenerate them with `python scripts/generate_sample_videos.py`.
+
+To populate the dashboards, run:
+
+```powershell
+.venv\Scripts\python scripts\seed_demo_data.py          # 4 classrooms, 5 courses, 34 simulated sessions
+.venv\Scripts\python scripts\process_sample_videos.py   # 4 real-pipeline sessions from the sample clips
+```
+
+Seeded sessions are labelled `DEMO`; choose "All data" or "Demo/test only" in Reports and Compare & Trends to include them. `--reset` rebuilds the demo data and `--remove` deletes it. The seeder also creates demo accounts (password `AmbiSense-Demo-2026`) that apply only when `AUTH_ENABLED=true`: `admin@ambisense.demo`, `r.iyer@ambisense.demo` and `m.chen@ambisense.demo` (instructors), `a.okafor@ambisense.demo` (reviewer) and `viewer@ambisense.demo`.
+
 ## Classroom calibration and activity context
 
 Open `/classroom-setup` to draw normalized seat, zone, instructor, projector, entrance, exit, or excluded-area polygons and save a new layout version. Assign that classroom to a session to enable calibrated aggregate region summaries. Without a calibrated layout, AmbiSense reports estimated unoccupied capacity rather than exact empty seats. Session Detail supports activity-context changes and event confirmation, uncertainty, or report exclusion.
