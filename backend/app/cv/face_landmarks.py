@@ -15,6 +15,22 @@ RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 MOUTH = [61, 82, 13, 312, 291, 308, 14, 87]
 POSE_POINTS = [1, 152, 33, 263, 61, 291]
 MODEL_POINTS = np.array([(0, 0, 0), (0, -63.6, -12.5), (-43.3, 32.7, -26), (43.3, 32.7, -26), (-28.9, -28.9, -24.1), (28.9, -28.9, -24.1)], dtype=np.float64)
+CAMERA_FROM_MODEL = np.diag([1.0, -1.0, -1.0])
+
+
+def solve_head_pose(image_points: np.ndarray, width: int, height: int) -> HeadPose:
+    """Solve PnP for six landmarks and classify the head direction."""
+    camera = np.array([[width, 0, width / 2], [0, width, height / 2], [0, 0, 1]], dtype=np.float64)
+    success, rotation, _translation = cv2.solvePnP(MODEL_POINTS, image_points, camera, np.zeros((4, 1)), flags=cv2.SOLVEPNP_ITERATIVE)
+    if not success:
+        return HeadPose(0, 0, 0, "UNKNOWN")
+    matrix, _ = cv2.Rodrigues(rotation)
+    # MODEL_POINTS are y-up/z-toward-camera while the camera is y-down/z-forward, so a
+    # frontal face solves to a 180 degree flip about x. Undo it before decomposing so a
+    # frontal face is (0, 0, 0), looking down is positive pitch and image-right is positive yaw.
+    angles, *_ = cv2.RQDecomp3x3(CAMERA_FROM_MODEL @ matrix)
+    pitch, yaw, roll = (float(value) for value in angles)
+    return estimate_head_pose(yaw, pitch, roll)
 
 
 @dataclass(frozen=True)
@@ -57,15 +73,7 @@ class FaceLandmarkProcessor:
         right_ear = eye_aspect_ratio([point(index) for index in RIGHT_EYE])
         mar = mouth_aspect_ratio([point(index) for index in MOUTH])
         image_points = np.array([point(index) for index in POSE_POINTS], dtype=np.float64)
-        camera = np.array([[width, 0, width / 2], [0, width, height / 2], [0, 0, 1]], dtype=np.float64)
-        success, rotation, _translation = cv2.solvePnP(MODEL_POINTS, image_points, camera, np.zeros((4, 1)), flags=cv2.SOLVEPNP_ITERATIVE)
-        if success:
-            matrix, _ = cv2.Rodrigues(rotation)
-            angles, *_ = cv2.RQDecomp3x3(matrix)
-            pitch, yaw, roll = (float(value) for value in angles)
-            pose = estimate_head_pose(yaw, pitch, roll)
-        else:
-            pose = HeadPose(0, 0, 0, "UNKNOWN")
+        pose = solve_head_pose(image_points, width, height)
         xs = [landmark.x * width for landmark in face]
         ys = [landmark.y * height for landmark in face]
         return FaceSignals(((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2), pose, (left_ear + right_ear) / 2, mar)
